@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <cmath>
 #include <vector>
@@ -182,7 +183,7 @@ public:
 int main() {
     Point3D a(0, 0, 6);
     Point3D b(1, 0, 0);
-    Point3D c(0, 3, 0); // Равносторонний треугольник
+    Point3D c(0, 3, 0); // Исходный неравносторонний треугольник
 
 
     Triangle triangle(a, b, c); // Создаем треугольник
