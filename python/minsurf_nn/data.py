@@ -79,7 +79,8 @@ def resample_boundary(points, count):
 
 
 class SurfaceDataset(Dataset):
-    def __init__(self, records, boundary_count=128, query_count=1024, seed=42):
+    def __init__(self, records, boundary_count=128, query_count=1024, seed=42,
+                 return_area=False):
         if boundary_count < 3 or query_count < 1:
             raise ValueError("boundary_count >= 3 and query_count >= 1 required")
         self.records = records
@@ -87,6 +88,7 @@ class SurfaceDataset(Dataset):
         self.query_count = query_count
         self.seed = seed
         self.epoch = 0
+        self.return_area = return_area
 
     def __len__(self):
         return len(self.records)
@@ -106,6 +108,19 @@ class SurfaceDataset(Dataset):
                 raise ValueError(f"Non-finite query/SDF in {record['path']}")
             rng = np.random.default_rng(np.random.SeedSequence([self.seed, self.epoch, index]))
             chosen = rng.choice(len(query), self.query_count, replace=len(query) < self.query_count)
-            return {"boundary": torch.from_numpy(boundary),
-                    "query": torch.from_numpy(query[chosen].copy()),
-                    "sdf": torch.from_numpy(target[chosen].copy())}
+            result = {"boundary": torch.from_numpy(boundary),
+                      "query": torch.from_numpy(query[chosen].copy()),
+                      "sdf": torch.from_numpy(target[chosen].copy())}
+            if self.return_area:
+                if "surface_vertices" not in sample or "faces" not in sample:
+                    raise ValueError(f"Target mesh is required for area in {record['path']}")
+                vertices = np.asarray(sample["surface_vertices"], dtype=np.float32)
+                faces = np.asarray(sample["faces"], dtype=np.int64)
+                triangles = vertices[faces]
+                area = 0.5 * np.linalg.norm(
+                    np.cross(triangles[:, 1] - triangles[:, 0],
+                             triangles[:, 2] - triangles[:, 0]), axis=1).sum()
+                if not np.isfinite(area) or area <= 0:
+                    raise ValueError(f"Invalid target area in {record['path']}")
+                result["area"] = torch.tensor(area, dtype=torch.float32)
+            return result

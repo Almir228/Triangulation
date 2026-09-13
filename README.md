@@ -6,7 +6,8 @@
 
 В репозитории также есть экспериментальный Python/PyTorch-прототип: C++-решатель
 генерирует пары «пространственный контур → минимальная поверхность», а условная
-нейросеть учится предсказывать локальное неявное поле поверхности.
+нейросеть учится предсказывать локальное неявное поле либо непосредственно
+коэффициенты аналитической формулы и площадь.
 
 ![Поверхность и убывание площади](examples/preview.png)
 
@@ -194,6 +195,20 @@ python scripts/evaluate_prediction.py dataset/smoke/sample_000000.npz \
 [`docs/MODEL_RU.md`](docs/MODEL_RU.md). Это baseline для измеримого эксперимента:
 пока он не гарантирует сохранение края или меньшую площадь, чем численный решатель.
 
+Прямой вариант «контур → формула и площадь» запускается так:
+
+```bash
+python scripts/train_chebyshev.py dataset/v1/manifest.jsonl \
+  --output runs/chebyshev-v1 --epochs 100 --degree 4
+python scripts/export_chebyshev.py runs/chebyshev-v1/best.pt \
+  dataset/v1/sample_000031.npz --output runs/chebyshev-v1/surface_formula.py \
+  --obj runs/chebyshev-v1/surface.obj
+```
+
+Формула имеет вид `F(x,y,z)=ΣaᵢⱼₖTᵢTⱼTₖ=0` внутри области проекции контура.
+Самостоятельный `.py`-файл вычисляет её без PyTorch. Метод и ограничения подробно
+описаны в [`docs/CHEBYSHEV_RU.md`](docs/CHEBYSHEV_RU.md).
+
 ## Структура
 
 ```text
@@ -208,6 +223,8 @@ scripts/generate_dataset.py  Генерация NPZ-датасета через 
 scripts/train_implicit.py    Обучение условного неявного поля
 scripts/predict_implicit.py  Marching Cubes и экспорт предсказания OBJ
 scripts/evaluate_prediction.py  Метрики предсказания относительно target
+scripts/train_chebyshev.py   Обучение прямого предиктора коэффициентов и площади
+scripts/export_chebyshev.py  Самостоятельная формула Python и OBJ
 python/minsurf_nn/       Модель, loader и функция потерь
 docs/                    Русская документация датасета и модели
 tests/                   Проверки численного метода и выражений
