@@ -9,7 +9,7 @@
 int main(int argc, char **argv) {
     try {
         std::string contour, obj, prefix = "surface", mode = "graph";
-        int levels = 3, iterations = 100;
+        int levels = 3, iterations = 100, remesh_passes = -1;
         double tolerance = 1e-9;
         minimal::Vec3 normal;
         for (int i = 1; i < argc; ++i) {
@@ -47,6 +47,8 @@ int main(int argc, char **argv) {
                 levels = integer();
             else if (arg == "--iterations")
                 iterations = integer();
+            else if (arg == "--remesh-passes")
+                remesh_passes = integer();
             else if (arg == "--tolerance")
                 tolerance = real();
             else if (arg == "--normal") {
@@ -61,6 +63,7 @@ int main(int argc, char **argv) {
                        "triangulation [--contour points.csv | --mesh input.obj] [--normal nx ny "
                        "nz]\n"
                        "              [--mode graph|spatial]\n"
+                       "              [--remesh-passes 0..100]\n"
                        "              [--refine 0..6] [--iterations 100] [--tolerance 1e-9] "
                        "[--output surface]\n"
                        "Без входного файла: x=cos(t), y=sin(t), z=0.35*cos(2t).\n"
@@ -74,6 +77,12 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Выберите --contour или --mesh.");
         if (mode != "graph" && mode != "spatial")
             throw std::runtime_error("Режим должен быть graph или spatial.");
+        if (remesh_passes < 0)
+            remesh_passes = mode == "spatial" ? 3 : 0;
+        if (remesh_passes < 0 || remesh_passes > 100)
+            throw std::runtime_error("Число проходов перестройки должно быть от 0 до 100.");
+        if (mode == "graph" && remesh_passes != 0)
+            throw std::runtime_error("Перестройка рёбер доступна только в режиме spatial.");
         if (levels < 0 || levels > 6 || iterations < 1 || iterations > 10000 || !(tolerance > 0))
             throw std::runtime_error("Недопустимые параметры расчёта.");
         minimal::Mesh mesh;
@@ -102,32 +111,65 @@ int main(int argc, char **argv) {
         for (int level = 0; level <= levels; ++level) {
             if (level)
                 minimal::refine(mesh);
-            const size_t topology = topologies.size();
-            topologies.push_back({mesh.faces});
-            auto record = [&](const minimal::Mesh &state, int iteration, double area,
-                              double residual, bool final) {
-                if (!frames.empty() && frames.back().topology == topology &&
-                    frames.back().iteration == iteration) {
-                    frames.back().vertices = state.vertices;
-                    frames.back().area = area;
-                    frames.back().residual = residual;
-                    return;
-                }
-                const size_t points = state.vertices.size();
-                if (stored_points + points > animation_point_budget && !final)
-                    return;
-                while (stored_points + points > animation_point_budget && frames.size() > 1) {
-                    stored_points -= frames[1].vertices.size();
-                    frames.erase(frames.begin() + 1);
-                }
-                if (stored_points + points > animation_point_budget)
-                    return;
-                frames.push_back({state.vertices, topology, area, residual, level, iteration});
-                stored_points += points;
+            minimal::MeshQuality quality_before, quality_after_remesh;
+            int flips = 0, smoothing_passes = 0;
+            if (mode == "spatial") {
+                quality_before = minimal::mesh_quality(mesh);
+                flips = minimal::improve_spatial_mesh(mesh, remesh_passes);
+                quality_after_remesh = minimal::mesh_quality(mesh);
+            }
+            auto optimize = [&]() {
+                const size_t topology = topologies.size();
+                topologies.push_back({mesh.faces});
+                auto record = [&](const minimal::Mesh &state, int iteration, double area,
+                                  double residual, bool final) {
+                    if (!frames.empty() && frames.back().topology == topology &&
+                        frames.back().iteration == iteration) {
+                        frames.back().vertices = state.vertices;
+                        frames.back().area = area;
+                        frames.back().residual = residual;
+                        frames.back().quality = minimal::mesh_quality(state).minimum;
+                        return;
+                    }
+                    const size_t points = state.vertices.size();
+                    if (stored_points + points > animation_point_budget && !final)
+                        return;
+                    while (stored_points + points > animation_point_budget && frames.size() > 1) {
+                        stored_points -= frames[1].vertices.size();
+                        frames.erase(frames.begin() + 1);
+                    }
+                    if (stored_points + points > animation_point_budget)
+                        return;
+                    frames.push_back({state.vertices, topology, area, residual, level, iteration,
+                                      minimal::mesh_quality(state).minimum});
+                    stored_points += points;
+                };
+                return mode == "spatial"
+                           ? minimal::minimize_spatial(mesh, iterations, tolerance, record)
+                           : minimal::minimize(mesh, iterations, tolerance, record);
             };
-            auto result = mode == "spatial"
-                              ? minimal::minimize_spatial(mesh, iterations, tolerance, record)
-                              : minimal::minimize(mesh, iterations, tolerance, record);
+            auto result = optimize();
+            if (mode == "spatial" && result.converged && remesh_passes > 0) {
+                for (int correction = 0; correction < 2; ++correction) {
+                    int final_flips = minimal::improve_spatial_mesh(mesh, remesh_passes);
+                    int smoothed = minimal::smooth_spatial_mesh(mesh, remesh_passes);
+                    flips += final_flips;
+                    smoothing_passes += smoothed;
+                    if (!final_flips && !smoothed)
+                        break;
+                    auto corrected = optimize();
+                    result.areas.insert(result.areas.end(), corrected.areas.begin(),
+                                        corrected.areas.end());
+                    result.iterations += corrected.iterations;
+                    result.residual = corrected.residual;
+                    result.converged = corrected.converged;
+                    if (!result.converged)
+                        break;
+                }
+            }
+            minimal::MeshQuality quality_final;
+            if (mode == "spatial")
+                quality_final = minimal::mesh_quality(mesh);
             converged = result.converged;
             for (size_t i = 0; i < result.areas.size(); ++i)
                 history << level << ',' << i << ',' << result.areas[i] << '\n';
@@ -137,6 +179,12 @@ int main(int argc, char **argv) {
                       << result.areas.back() << ", невязка " << result.residual << ", итераций "
                       << result.iterations << ", " << (converged ? "сошлось" : "НЕ сошлось")
                       << '\n';
+            if (mode == "spatial")
+                std::cout << "  Перевёрнуто рёбер: " << flips
+                          << ", проходов сглаживания: " << smoothing_passes
+                          << ", минимальное качество: " << quality_before.minimum << " -> "
+                          << quality_after_remesh.minimum << " -> " << quality_final.minimum
+                          << '\n';
             if (!converged)
                 break;
         }

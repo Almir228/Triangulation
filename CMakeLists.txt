@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(Triangulation LANGUAGES CXX)
 
-add_library(minimal_surface src/surface.cpp src/obj.cpp src/viewer.cpp)
+add_library(minimal_surface src/surface.cpp src/obj.cpp src/remesh.cpp src/viewer.cpp)
 target_include_directories(minimal_surface PUBLIC src)
 target_compile_features(minimal_surface PUBLIC cxx_std_17)
 set_target_properties(minimal_surface PROPERTIES CXX_EXTENSIONS OFF)

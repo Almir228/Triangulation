@@ -132,6 +132,42 @@ void spatial_overhang() {
         if (m.boundary[i])
             check(norm(m.vertices[i] - before[i]) == 0, "spatial mode moved boundary");
 }
+void edge_flips() {
+    Mesh mesh;
+    mesh.vertices = {{0, 0, 0}, {4, 0, 0}, {3, 1, 0}, {0, 2, 0}};
+    mesh.faces = {{0, 1, 3}, {1, 2, 3}};
+    mesh.boundary.assign(4, true);
+    double area_before = evaluate_spatial(mesh, false).area;
+    auto quality_before = mesh_quality(mesh);
+    int flips = improve_spatial_mesh(mesh, 3);
+    auto quality_after = mesh_quality(mesh);
+    check(flips == 1, "beneficial edge was not flipped exactly once");
+    check(quality_after.minimum > quality_before.minimum,
+          "edge flip did not improve minimum triangle quality");
+    check(std::abs(evaluate_spatial(mesh, false).area - area_before) < 1e-12,
+          "planar edge flip changed surface area");
+    check((mesh.faces[0] == std::array<int, 3>{0, 1, 2} ||
+           mesh.faces[1] == std::array<int, 3>{0, 1, 2}),
+          "edge flip produced unexpected connectivity");
+}
+void tangential_smoothing() {
+    Mesh mesh;
+    mesh.vertices = {{-1, -1, 0}, {1, -1, 0}, {1, 1, 0}, {-1, 1, 0}, {.8, .8, 0}};
+    mesh.faces = {{0, 1, 4}, {1, 2, 4}, {2, 3, 4}, {3, 0, 4}};
+    mesh.boundary = {true, true, true, true, false};
+    auto before_vertices = mesh.vertices;
+    auto before_quality = mesh_quality(mesh);
+    double before_area = evaluate_spatial(mesh, false).area;
+    int passes = smooth_spatial_mesh(mesh, 3);
+    check(passes > 0, "tangential smoothing rejected a planar improvement");
+    check(mesh_quality(mesh).minimum > before_quality.minimum,
+          "tangential smoothing did not improve minimum quality");
+    check(std::abs(evaluate_spatial(mesh, false).area - before_area) < 1e-12,
+          "planar tangential smoothing changed area");
+    for (size_t i = 0; i < 4; ++i)
+        check(norm(mesh.vertices[i] - before_vertices[i]) == 0,
+              "tangential smoothing moved boundary");
+}
 double scherk(int n) {
     auto path =
         std::filesystem::temp_directory_path() /
@@ -174,6 +210,8 @@ int main() {
         derivatives();
         spatial_derivatives();
         spatial_overhang();
+        edge_flips();
+        tangential_smoothing();
         double a = scherk(4), b = scherk(8), c = scherk(16);
         std::cout << "Scherk max errors: " << a << ", " << b << ", " << c << '\n';
         check(b < a * .8 && c < b * .8 && c < .002, "Scherk refinement failed");

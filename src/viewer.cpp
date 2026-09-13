@@ -85,7 +85,8 @@ const scaleFactor=)HTML"
         out << "{v:";
         write_vertices(out, frames[i].vertices);
         out << ",t:" << frames[i].topology << ",a:" << frames[i].area << ",r:" << frames[i].residual
-            << ",l:" << frames[i].level << ",i:" << frames[i].iteration << '}';
+            << ",l:" << frames[i].level << ",i:" << frames[i].iteration
+            << ",q:" << frames[i].quality << '}';
     }
     out << R"HTML(];
 const canvas=document.getElementById('view'),ctx=canvas.getContext('2d');
@@ -102,7 +103,7 @@ function current(){
  const maximum=frames.length-1,position=Number.isFinite(playhead)?Math.max(0,Math.min(maximum,playhead)):0;playhead=position;
  const left=Math.floor(position),right=Math.min(maximum,left+1),mix=position-left,a=frames[left],b=frames[right];
  if(a.t!==b.t||a.v.length!==b.v.length)return mix<.5?{...a,mix:0}:{...b,mix:0};
- return {v:a.v.map((p,j)=>p.map((x,k)=>x+(b.v[j][k]-x)*mix)),t:a.t,a:a.a+(b.a-a.a)*mix,r:a.r+(b.r-a.r)*mix,l:mix<.5?a.l:b.l,i:mix<.5?a.i:b.i,mix};
+ return {v:a.v.map((p,j)=>p.map((x,k)=>x+(b.v[j][k]-x)*mix)),t:a.t,a:a.a+(b.a-a.a)*mix,r:a.r+(b.r-a.r)*mix,l:mix<.5?a.l:b.l,i:mix<.5?a.i:b.i,q:a.q+(b.q-a.q)*mix,mix};
 }
 function project(points,w,h){
  const cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch),size=Math.min(w,h)*.72*zoom/radius;
@@ -124,7 +125,7 @@ function draw(){
  const initial=frames[0].a,reduction=initial?100*(initial-frame.a)/initial:0;
  document.getElementById('area').textContent=`Площадь: ${frame.a.toPrecision(9)}`;
  document.getElementById('reduction').textContent=`Изменение от начала: ${reduction.toFixed(3)}%`;
- document.getElementById('stats').textContent=`Кадр ${Math.min(frames.length,Math.floor(playhead)+1)} из ${frames.length} · уровень сетки ${frame.l} · итерация ${frame.i} · ${frame.v.length} вершин · ${faces.length} треугольников · невязка ${frame.r.toExponential(2)}`;
+ document.getElementById('stats').textContent=`Кадр ${Math.min(frames.length,Math.floor(playhead)+1)} из ${frames.length} · уровень сетки ${frame.l} · итерация ${frame.i} · ${frame.v.length} вершин · ${faces.length} треугольников · качество ${frame.q.toFixed(3)} · невязка ${frame.r.toExponential(2)}`;
  timeline.value=playhead;
 }
 function setPlaying(value){if(playTimer!==null){clearTimeout(playTimer);playTimer=null;}playing=value;const generation=++playGeneration;playButton.textContent=playing?'Ⅱ Пауза':'▶ Запустить';if(playing){if(playhead>=frames.length-1)playhead=0;lastTime=performance.now()-16;draw();tick(generation);}}

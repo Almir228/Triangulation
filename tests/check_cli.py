@@ -17,6 +17,8 @@ with tempfile.TemporaryDirectory() as directory:
     run(['--refine', 'abc'], 1)
     run(['--normal', '0', '0', '0'], 1)
     run(['--mode', 'unknown'], 1)
+    run(['--remesh-passes', '101'], 1)
+    run(['--mode', 'graph', '--remesh-passes', '1'], 1)
     run(['--contour', 'missing.csv'], 1)
     p=root/'bad.csv';p.write_text('0,0,0\n1,0,0\n0,1,0 trailing\n');run(['--contour', str(p)],1)
     # A consistently oriented tetrahedron has no open boundary.
@@ -26,7 +28,8 @@ with tempfile.TemporaryDirectory() as directory:
     # Spatial mode accepts an overhang that is not a single-valued height graph.
     p=root/'overhang.obj';p.write_text('v -1 -1 0\nv 1 -1 0\nv 1 1 0\nv -1 1 0\nv 2 0 0.8\nf 1 2 5\nf 2 3 5\nf 3 4 5\nf 4 1 5\n')
     run(['--mesh',str(p),'--mode','graph','--refine','0'],1)
-    run(['--mesh',str(p),'--mode','spatial','--refine','0'])
+    spatial=run(['--mesh',str(p),'--mode','spatial','--refine','0'])
+    assert 'Перевёрнуто рёбер:' in spatial.stdout and 'проходов сглаживания:' in spatial.stdout
     rows=list(csv.DictReader((root/'surface.csv').open()));assert abs(float(rows[-1]['area'])-4)<1e-10
     # Both formula entry paths run end to end.
     subprocess.run([sys.executable,str(formula),'contour','--samples','24','--output',str(root/'curve.csv')],check=True,capture_output=True)
@@ -43,5 +46,6 @@ with tempfile.TemporaryDirectory() as directory:
     assert 'Number(timeline.value)' in html and 'playGeneration' in html
     assert 'timeline.onchange=scrub' in html and 'playTimer=setTimeout' in html
     assert 'Number.isFinite(playhead)' in html and 'Number.isFinite(selectedSpeed)' in html
+    assert 'качество ${frame.q.toFixed(3)}' in html
     assert html.count('{v:') >= 2
 print('CLI: validation, formula inputs, OBJ indices, monotonic area and nonconvergence status passed')
