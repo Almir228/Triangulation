@@ -163,6 +163,31 @@ Evaluation evaluate(const Mesh &m, bool derivatives) {
     }
     return out;
 }
+SpatialEvaluation evaluate_spatial(const Mesh &m, bool derivatives) {
+    SpatialEvaluation out;
+    out.minimum_twice_area = std::numeric_limits<double>::infinity();
+    if (derivatives)
+        out.gradient.resize(m.vertices.size());
+    for (auto f : m.faces) {
+        Vec3 u = m.vertices[f[1]] - m.vertices[f[0]];
+        Vec3 v = m.vertices[f[2]] - m.vertices[f[0]];
+        Vec3 area_vector = cross(u, v);
+        double twice_area = norm(area_vector);
+        if (!(twice_area > 1e-18) || !std::isfinite(twice_area))
+            throw std::runtime_error("Вырожденный пространственный треугольник.");
+        out.area += 0.5 * twice_area;
+        out.minimum_twice_area = std::min(out.minimum_twice_area, twice_area);
+        if (!derivatives)
+            continue;
+        Vec3 unit_normal = area_vector * (1 / twice_area);
+        Vec3 g1 = cross(v, unit_normal) * 0.5;
+        Vec3 g2 = cross(unit_normal, u) * 0.5;
+        out.gradient[f[0]] = out.gradient[f[0]] + (g1 + g2) * -1;
+        out.gradient[f[1]] = out.gradient[f[1]] + g1;
+        out.gradient[f[2]] = out.gradient[f[2]] + g2;
+    }
+    return out;
+}
 static double inner(const std::vector<double> &a, const std::vector<double> &b) {
     double s = 0;
     for (size_t i = 0; i < a.size(); ++i)
@@ -268,6 +293,136 @@ Result minimize(Mesh &m, int max_iterations, double tolerance, const IterationOb
                 observer(m, iteration, result.areas.back(), residual, true);
             return result;
         }
+    }
+    return result;
+}
+
+Result minimize_spatial(Mesh &m, int max_iterations, double tolerance,
+                        const IterationObserver &observer) {
+    if (max_iterations < 1 || !(tolerance > 0) || !std::isfinite(tolerance))
+        throw std::runtime_error("Некорректные параметры пространственной оптимизации.");
+    const double minimum_area_floor = evaluate_spatial(m, false).minimum_twice_area * 1e-8;
+    constexpr size_t memory = 8;
+    std::vector<std::vector<double>> steps, gradient_changes;
+    std::vector<double> inverse_curvatures, previous_x, previous_gradient;
+    bool have_previous = false;
+    Result result;
+    auto coordinates = [&]() {
+        std::vector<double> x(m.vertices.size() * 3);
+        for (size_t i = 0; i < m.vertices.size(); ++i) {
+            x[3 * i] = m.vertices[i].x;
+            x[3 * i + 1] = m.vertices[i].y;
+            x[3 * i + 2] = m.vertices[i].z;
+        }
+        return x;
+    };
+    for (int iteration = 0; iteration <= max_iterations; ++iteration) {
+        auto e = evaluate_spatial(m);
+        result.areas.push_back(e.area * m.scale * m.scale);
+        result.iterations = iteration;
+        std::vector<double> x = coordinates(), gradient(x.size());
+        double residual = 0;
+        for (size_t i = 0; i < m.vertices.size(); ++i) {
+            Vec3 g = m.boundary[i] ? Vec3{} : e.gradient[i];
+            gradient[3 * i] = g.x;
+            gradient[3 * i + 1] = g.y;
+            gradient[3 * i + 2] = g.z;
+            residual = std::max(residual, norm(g));
+        }
+        result.residual = residual;
+        if (observer)
+            observer(m, iteration, result.areas.back(), residual, false);
+        if (residual <= tolerance) {
+            result.converged = true;
+            if (observer)
+                observer(m, iteration, result.areas.back(), residual, true);
+            return result;
+        }
+        if (iteration == max_iterations) {
+            if (observer)
+                observer(m, iteration, result.areas.back(), residual, true);
+            return result;
+        }
+        if (have_previous) {
+            std::vector<double> s(x.size()), y(x.size());
+            for (size_t i = 0; i < x.size(); ++i) {
+                s[i] = x[i] - previous_x[i];
+                y[i] = gradient[i] - previous_gradient[i];
+            }
+            double sy = inner(s, y), ss = inner(s, s), yy = inner(y, y);
+            if (sy > 1e-14 * std::sqrt(ss * yy) && std::isfinite(sy)) {
+                if (steps.size() == memory) {
+                    steps.erase(steps.begin());
+                    gradient_changes.erase(gradient_changes.begin());
+                    inverse_curvatures.erase(inverse_curvatures.begin());
+                }
+                steps.push_back(std::move(s));
+                gradient_changes.push_back(std::move(y));
+                inverse_curvatures.push_back(1 / sy);
+            }
+        }
+        std::vector<double> direction = gradient;
+        std::vector<double> coefficients(steps.size());
+        for (size_t k = steps.size(); k-- > 0;) {
+            coefficients[k] = inverse_curvatures[k] * inner(steps[k], direction);
+            for (size_t i = 0; i < direction.size(); ++i)
+                direction[i] -= coefficients[k] * gradient_changes[k][i];
+        }
+        if (!steps.empty()) {
+            double sy = 1 / inverse_curvatures.back();
+            double yy = inner(gradient_changes.back(), gradient_changes.back());
+            double scale = yy > 0 ? sy / yy : 1;
+            for (double &value : direction)
+                value *= scale;
+        }
+        for (size_t k = 0; k < steps.size(); ++k) {
+            double beta = inverse_curvatures[k] * inner(gradient_changes[k], direction);
+            for (size_t i = 0; i < direction.size(); ++i)
+                direction[i] += steps[k][i] * (coefficients[k] - beta);
+        }
+        for (double &value : direction)
+            value *= -1;
+        double descent = inner(gradient, direction);
+        if (!(descent < 0) || !std::isfinite(descent)) {
+            direction = gradient;
+            for (double &value : direction)
+                value *= -1;
+            descent = -inner(gradient, gradient);
+            steps.clear();
+            gradient_changes.clear();
+            inverse_curvatures.clear();
+        }
+        auto original = m.vertices;
+        double step_length = 1;
+        bool accepted = false;
+        for (int line_search = 0; line_search < 32; ++line_search) {
+            for (size_t i = 0; i < m.vertices.size(); ++i) {
+                if (m.boundary[i])
+                    continue;
+                m.vertices[i] = {original[i].x + step_length * direction[3 * i],
+                                 original[i].y + step_length * direction[3 * i + 1],
+                                 original[i].z + step_length * direction[3 * i + 2]};
+            }
+            try {
+                auto candidate = evaluate_spatial(m, false);
+                if (candidate.minimum_twice_area >= minimum_area_floor &&
+                    candidate.area <= e.area + 1e-4 * step_length * descent) {
+                    accepted = true;
+                    break;
+                }
+            } catch (const std::runtime_error &) {
+            }
+            step_length *= 0.5;
+        }
+        if (!accepted) {
+            m.vertices = std::move(original);
+            if (observer)
+                observer(m, iteration, result.areas.back(), residual, true);
+            return result;
+        }
+        previous_x = std::move(x);
+        previous_gradient = std::move(gradient);
+        have_previous = true;
     }
     return result;
 }

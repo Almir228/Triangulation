@@ -9,7 +9,7 @@
 #include <stdexcept>
 
 namespace minimal {
-Mesh read_obj(const std::string &path, Vec3 normal) {
+Mesh read_obj(const std::string &path, Vec3 normal, bool require_graph) {
     std::ifstream in(path);
     if (!in)
         throw std::runtime_error("Не удалось открыть OBJ: " + path);
@@ -114,31 +114,62 @@ Mesh read_obj(const std::string &path, Vec3 normal) {
     std::vector<Vec3> contour;
     for (int i : boundary)
         contour.push_back(m.vertices[i]);
-    auto frame = triangulate(contour, normal);
-    m.origin = frame.origin;
-    m.scale = frame.scale;
-    m.normal = frame.normal;
     m.boundary.assign(m.vertices.size(), false);
     for (int i : boundary)
         m.boundary[i] = true;
-    for (auto &p : m.vertices)
-        p = (p - m.origin) * (1 / m.scale);
-    double orientation = 0;
-    for (auto f : m.faces) {
-        double signed_area =
-            dot(cross(m.vertices[f[1]] - m.vertices[f[0]], m.vertices[f[2]] - m.vertices[f[0]]),
-                m.normal);
-        if (!std::isfinite(signed_area) || std::abs(signed_area) < 1e-14)
-            throw std::runtime_error("OBJ: вырожденная грань в проекции.");
-        if (orientation == 0)
-            orientation = signed_area;
-        if (signed_area * orientation <= 0)
-            throw std::runtime_error(
-                "OBJ: поверхность с нависаниями или перевёрнутыми гранями не поддерживается.");
+    if (require_graph) {
+        auto frame = triangulate(contour, normal);
+        m.origin = frame.origin;
+        m.scale = frame.scale;
+        m.normal = frame.normal;
+        for (auto &p : m.vertices)
+            p = (p - m.origin) * (1 / m.scale);
+        double orientation = 0;
+        for (auto f : m.faces) {
+            double signed_area =
+                dot(cross(m.vertices[f[1]] - m.vertices[f[0]], m.vertices[f[2]] - m.vertices[f[0]]),
+                    m.normal);
+            if (!std::isfinite(signed_area) || std::abs(signed_area) < 1e-14)
+                throw std::runtime_error("OBJ: вырожденная грань в проекции.");
+            if (orientation == 0)
+                orientation = signed_area;
+            if (signed_area * orientation <= 0)
+                throw std::runtime_error(
+                    "OBJ: поверхность с нависаниями или перевёрнутыми гранями не "
+                    "поддерживается в режиме graph.");
+        }
+        if (orientation < 0)
+            for (auto &f : m.faces)
+                std::swap(f[1], f[2]);
+    } else {
+        m.origin = m.vertices[boundary.front()];
+        m.scale = 0;
+        for (auto p : m.vertices)
+            m.scale = std::max(m.scale, norm(p - m.origin));
+        if (!(m.scale > 0) || !std::isfinite(m.scale))
+            throw std::runtime_error("OBJ: вырожденный масштаб сетки.");
+        Vec3 inferred;
+        for (size_t i = 0; i < contour.size(); ++i)
+            inferred = inferred +
+                       cross(contour[i] - m.origin, contour[(i + 1) % contour.size()] - m.origin);
+        if (norm(normal) > 0)
+            inferred = normal;
+        if (norm(inferred) < 1e-12)
+            for (auto f : m.faces)
+                inferred = inferred + cross(m.vertices[f[1]] - m.vertices[f[0]],
+                                            m.vertices[f[2]] - m.vertices[f[0]]);
+        if (norm(inferred) < 1e-12 || !std::isfinite(norm(inferred)))
+            throw std::runtime_error("OBJ: не удалось определить ориентацию поверхности.");
+        m.normal = inferred * (1 / norm(inferred));
+        for (auto &p : m.vertices)
+            p = (p - m.origin) * (1 / m.scale);
+        for (auto f : m.faces) {
+            double twice_area = norm(
+                cross(m.vertices[f[1]] - m.vertices[f[0]], m.vertices[f[2]] - m.vertices[f[0]]));
+            if (!(twice_area > 1e-14) || !std::isfinite(twice_area))
+                throw std::runtime_error("OBJ: вырожденная пространственная грань.");
+        }
     }
-    if (orientation < 0)
-        for (auto &f : m.faces)
-            std::swap(f[1], f[2]);
     return m;
 }
 } // namespace minimal

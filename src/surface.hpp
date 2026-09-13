@@ -26,6 +26,11 @@ struct Evaluation {
     std::vector<double> gradient;
     std::vector<std::array<double, 9>> hessian;
 };
+struct SpatialEvaluation {
+    double area = 0;
+    double minimum_twice_area = 0;
+    std::vector<Vec3> gradient;
+};
 struct Result {
     bool converged = false;
     int iterations = 0;
@@ -47,11 +52,14 @@ using IterationObserver =
     std::function<void(const Mesh &, int iteration, double area, double residual, bool final)>;
 std::vector<Vec3> read_contour(const std::string &path);
 Mesh triangulate(std::vector<Vec3> contour, Vec3 normal = {});
-Mesh read_obj(const std::string &path, Vec3 normal = {});
+Mesh read_obj(const std::string &path, Vec3 normal = {}, bool require_graph = true);
 void refine(Mesh &mesh);
 Evaluation evaluate(const Mesh &mesh, bool derivatives = true);
+SpatialEvaluation evaluate_spatial(const Mesh &mesh, bool derivatives = true);
 Result minimize(Mesh &mesh, int max_iterations = 100, double tolerance = 1e-9,
                 const IterationObserver &observer = {});
+Result minimize_spatial(Mesh &mesh, int max_iterations = 100, double tolerance = 1e-9,
+                        const IterationObserver &observer = {});
 void write_obj(const Mesh &mesh, const std::string &path);
 void write_html(const Mesh &mesh, const std::string &path,
                 const std::vector<AnimationTopology> &topologies,

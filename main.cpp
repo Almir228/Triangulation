@@ -8,7 +8,7 @@
 
 int main(int argc, char **argv) {
     try {
-        std::string contour, obj, prefix = "surface";
+        std::string contour, obj, prefix = "surface", mode = "graph";
         int levels = 3, iterations = 100;
         double tolerance = 1e-9;
         minimal::Vec3 normal;
@@ -41,6 +41,8 @@ int main(int argc, char **argv) {
                 obj = value();
             else if (arg == "--output")
                 prefix = value();
+            else if (arg == "--mode")
+                mode = value();
             else if (arg == "--refine")
                 levels = integer();
             else if (arg == "--iterations")
@@ -58,6 +60,7 @@ int main(int argc, char **argv) {
                     << "Минимальная поверхность с закреплённой границей\n"
                        "triangulation [--contour points.csv | --mesh input.obj] [--normal nx ny "
                        "nz]\n"
+                       "              [--mode graph|spatial]\n"
                        "              [--refine 0..6] [--iterations 100] [--tolerance 1e-9] "
                        "[--output surface]\n"
                        "Без входного файла: x=cos(t), y=sin(t), z=0.35*cos(2t).\n"
@@ -69,11 +72,13 @@ int main(int argc, char **argv) {
         }
         if (!contour.empty() && !obj.empty())
             throw std::runtime_error("Выберите --contour или --mesh.");
+        if (mode != "graph" && mode != "spatial")
+            throw std::runtime_error("Режим должен быть graph или spatial.");
         if (levels < 0 || levels > 6 || iterations < 1 || iterations > 10000 || !(tolerance > 0))
             throw std::runtime_error("Недопустимые параметры расчёта.");
         minimal::Mesh mesh;
         if (!obj.empty())
-            mesh = minimal::read_obj(obj, normal);
+            mesh = minimal::read_obj(obj, normal, mode == "graph");
         else {
             std::vector<minimal::Vec3> points;
             if (!contour.empty())
@@ -120,15 +125,18 @@ int main(int argc, char **argv) {
                 frames.push_back({state.vertices, topology, area, residual, level, iteration});
                 stored_points += points;
             };
-            auto result = minimal::minimize(mesh, iterations, tolerance, record);
+            auto result = mode == "spatial"
+                              ? minimal::minimize_spatial(mesh, iterations, tolerance, record)
+                              : minimal::minimize(mesh, iterations, tolerance, record);
             converged = result.converged;
             for (size_t i = 0; i < result.areas.size(); ++i)
                 history << level << ',' << i << ',' << result.areas[i] << '\n';
-            std::cout << std::setprecision(12) << "Уровень " << level << ": вершин "
-                      << mesh.vertices.size() << ", треугольников " << mesh.faces.size()
-                      << ", площадь " << result.areas.front() << " -> " << result.areas.back()
-                      << ", невязка " << result.residual << ", итераций " << result.iterations
-                      << ", " << (converged ? "сошлось" : "НЕ сошлось") << '\n';
+            std::cout << std::setprecision(12) << "Режим " << mode << ", уровень " << level
+                      << ": вершин " << mesh.vertices.size() << ", треугольников "
+                      << mesh.faces.size() << ", площадь " << result.areas.front() << " -> "
+                      << result.areas.back() << ", невязка " << result.residual << ", итераций "
+                      << result.iterations << ", " << (converged ? "сошлось" : "НЕ сошлось")
+                      << '\n';
             if (!converged)
                 break;
         }

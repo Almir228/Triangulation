@@ -94,6 +94,44 @@ void derivatives() {
                   "Hessian failed finite differences");
     }
 }
+void spatial_derivatives() {
+    auto m = triangulate({{1, 0, .3}, {0, 1, -.2}, {-1, 0, .3}, {0, -1, -.2}});
+    refine(m);
+    auto base = evaluate_spatial(m);
+    const double eps = 1e-6;
+    for (size_t i = 0; i < m.vertices.size(); ++i)
+        for (int coordinate = 0; coordinate < 3; ++coordinate) {
+            auto plus = m, minus = m;
+            double *positive[] = {&plus.vertices[i].x, &plus.vertices[i].y, &plus.vertices[i].z};
+            double *negative[] = {&minus.vertices[i].x, &minus.vertices[i].y, &minus.vertices[i].z};
+            *positive[coordinate] += eps;
+            *negative[coordinate] -= eps;
+            double numeric =
+                (evaluate_spatial(plus, false).area - evaluate_spatial(minus, false).area) /
+                (2 * eps);
+            double analytic[] = {base.gradient[i].x, base.gradient[i].y, base.gradient[i].z};
+            check(std::abs(numeric - analytic[coordinate]) < 1e-7,
+                  "spatial area gradient failed finite differences");
+        }
+}
+void spatial_overhang() {
+    auto path = std::filesystem::temp_directory_path() / "minimal-spatial-overhang.obj";
+    std::ofstream out(path);
+    out << "v -1 -1 0\nv 1 -1 0\nv 1 1 0\nv -1 1 0\nv 2 0 0.8\n"
+           "f 1 2 5\nf 2 3 5\nf 3 4 5\nf 4 1 5\n";
+    out.close();
+    rejects([&] { read_obj(path.string(), {}, true); });
+    auto m = read_obj(path.string(), {}, false);
+    std::filesystem::remove(path);
+    auto before = m.vertices;
+    auto result = minimize_spatial(m, 100, 1e-9);
+    monotone(result);
+    check(std::abs(result.areas.back() - 4) < 1e-10,
+          "spatial mode did not flatten overhanging mesh");
+    for (size_t i = 0; i < m.vertices.size(); ++i)
+        if (m.boundary[i])
+            check(norm(m.vertices[i] - before[i]) == 0, "spatial mode moved boundary");
+}
 double scherk(int n) {
     auto path =
         std::filesystem::temp_directory_path() /
@@ -134,6 +172,8 @@ int main() {
     try {
         planar();
         derivatives();
+        spatial_derivatives();
+        spatial_overhang();
         double a = scherk(4), b = scherk(8), c = scherk(16);
         std::cout << "Scherk max errors: " << a << ", " << b << ", " << c << '\n';
         check(b < a * .8 && c < b * .8 && c < .002, "Scherk refinement failed");

@@ -16,12 +16,18 @@ with tempfile.TemporaryDirectory() as directory:
     run(['--help'])
     run(['--refine', 'abc'], 1)
     run(['--normal', '0', '0', '0'], 1)
+    run(['--mode', 'unknown'], 1)
     run(['--contour', 'missing.csv'], 1)
     p=root/'bad.csv';p.write_text('0,0,0\n1,0,0\n0,1,0 trailing\n');run(['--contour', str(p)],1)
     # A consistently oriented tetrahedron has no open boundary.
     p=root/'closed.obj';p.write_text('v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 2 3 4\nf 3 1 4\n');run(['--mesh',str(p)],1)
     # Negative OBJ indices and v/vt/vn syntax.
     p=root/'triangle.obj';p.write_text('v 0 0 0\nv 1 0 0\nv 0 1 0\nf -3/1/1 -2/2/1 -1/3/1\n');run(['--mesh',str(p),'--refine','0'])
+    # Spatial mode accepts an overhang that is not a single-valued height graph.
+    p=root/'overhang.obj';p.write_text('v -1 -1 0\nv 1 -1 0\nv 1 1 0\nv -1 1 0\nv 2 0 0.8\nf 1 2 5\nf 2 3 5\nf 3 4 5\nf 4 1 5\n')
+    run(['--mesh',str(p),'--mode','graph','--refine','0'],1)
+    run(['--mesh',str(p),'--mode','spatial','--refine','0'])
+    rows=list(csv.DictReader((root/'surface.csv').open()));assert abs(float(rows[-1]['area'])-4)<1e-10
     # Both formula entry paths run end to end.
     subprocess.run([sys.executable,str(formula),'contour','--samples','24','--output',str(root/'curve.csv')],check=True,capture_output=True)
     run(['--contour',str(root/'curve.csv'),'--refine','2'])
