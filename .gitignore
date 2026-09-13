@@ -14,3 +14,10 @@ __pycache__/
 !.env.example
 
 /triangulation
+
+# Default command-line outputs
+/surface.obj
+/surface.html
+/surface.csv
+/contour.csv
+/initial.obj

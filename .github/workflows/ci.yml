@@ -1,0 +1,20 @@
+name: Проверки
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Настроить сборку
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Собрать
+        run: cmake --build build --parallel 2
+      - name: Проверить
+        run: ctest --test-dir build --output-on-failure
