@@ -169,7 +169,7 @@ static double inner(const std::vector<double> &a, const std::vector<double> &b) 
         s += a[i] * b[i];
     return s;
 }
-Result minimize(Mesh &m, int max_iterations, double tolerance) {
+Result minimize(Mesh &m, int max_iterations, double tolerance, const IterationObserver &observer) {
     if (max_iterations < 1 || !(tolerance > 0) || !std::isfinite(tolerance))
         throw std::runtime_error("Некорректные параметры оптимизации.");
     Result result;
@@ -185,12 +185,19 @@ Result minimize(Mesh &m, int max_iterations, double tolerance) {
             residual = std::max(residual, std::abs(g[i]));
         }
         result.residual = residual;
+        if (observer)
+            observer(m, iteration, result.areas.back(), residual, false);
         if (residual <= tolerance) {
             result.converged = true;
+            if (observer)
+                observer(m, iteration, result.areas.back(), residual, true);
             return result;
         }
-        if (iteration == max_iterations)
+        if (iteration == max_iterations) {
+            if (observer)
+                observer(m, iteration, result.areas.back(), residual, true);
             return result;
+        }
         const size_t n = g.size();
         std::vector<double> diagonal(n, 1e-12);
         for (size_t t = 0; t < m.faces.size(); ++t)
@@ -257,6 +264,8 @@ Result minimize(Mesh &m, int max_iterations, double tolerance) {
         }
         if (!accepted) {
             m.vertices = std::move(original);
+            if (observer)
+                observer(m, iteration, result.areas.back(), residual, true);
             return result;
         }
     }

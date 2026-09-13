@@ -31,5 +31,8 @@ with tempfile.TemporaryDirectory() as directory:
     run(['--mesh',str(root/'dome.obj'),'--normal','0','0','1','--refine','0','--iterations','1'],2)
     run(['--mesh',str(root/'dome.obj'),'--normal','0','0','1','--refine','0'])
     rows=list(csv.DictReader((root/'surface.csv').open()));assert abs(float(rows[-1]['area'])-4)<1e-10
-    assert '<canvas' in (root/'surface.html').read_text()
+    html = (root/'surface.html').read_text()
+    assert '<canvas' in html
+    assert 'Скачать WebM' in html and 'MediaRecorder' in html
+    assert html.count('{v:') >= 2
 print('CLI: validation, formula inputs, OBJ indices, monotonic area and nonconvergence status passed')

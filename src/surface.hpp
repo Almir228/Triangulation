@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -31,12 +32,28 @@ struct Result {
     double residual = 0;
     std::vector<double> areas;
 };
+struct AnimationTopology {
+    std::vector<std::array<int, 3>> faces;
+};
+struct AnimationFrame {
+    std::vector<Vec3> vertices;
+    size_t topology = 0;
+    double area = 0;
+    double residual = 0;
+    int level = 0;
+    int iteration = 0;
+};
+using IterationObserver =
+    std::function<void(const Mesh &, int iteration, double area, double residual, bool final)>;
 std::vector<Vec3> read_contour(const std::string &path);
 Mesh triangulate(std::vector<Vec3> contour, Vec3 normal = {});
 Mesh read_obj(const std::string &path, Vec3 normal = {});
 void refine(Mesh &mesh);
 Evaluation evaluate(const Mesh &mesh, bool derivatives = true);
-Result minimize(Mesh &mesh, int max_iterations = 100, double tolerance = 1e-9);
+Result minimize(Mesh &mesh, int max_iterations = 100, double tolerance = 1e-9,
+                const IterationObserver &observer = {});
 void write_obj(const Mesh &mesh, const std::string &path);
-void write_html(const Mesh &mesh, const std::string &path);
+void write_html(const Mesh &mesh, const std::string &path,
+                const std::vector<AnimationTopology> &topologies,
+                const std::vector<AnimationFrame> &frames);
 } // namespace minimal

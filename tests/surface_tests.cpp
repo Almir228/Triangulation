@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 using namespace minimal;
 void check(bool condition, const char *text) {
@@ -39,7 +40,19 @@ void planar() {
     for (size_t i = 0; i < m.vertices.size(); ++i)
         if (!m.boundary[i])
             m.vertices[i] = m.vertices[i] + m.normal * .2;
-    monotone(minimize(m));
+    int observed = 0, final_observations = 0;
+    double last_observed_area = std::numeric_limits<double>::infinity();
+    auto result =
+        minimize(m, 100, 1e-9, [&](const Mesh &state, int, double area, double, bool final) {
+            ++observed;
+            final_observations += final;
+            check(area <= last_observed_area + 1e-12, "observer saw increasing area");
+            check(std::abs(area - evaluate(state, false).area * state.scale * state.scale) < 1e-12,
+                  "observer area does not match its mesh");
+            last_observed_area = area;
+        });
+    monotone(result);
+    check(observed > 1 && final_observations == 1, "iteration observer did not report evolution");
     check(std::abs(evaluate(m, false).area * m.scale * m.scale -
                    16 * std::sin(2 * std::acos(-1.) / 32)) < 1e-10,
           "incorrect planar area");

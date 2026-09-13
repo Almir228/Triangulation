@@ -1,4 +1,5 @@
 #include "surface.hpp"
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -60,7 +61,8 @@ int main(int argc, char **argv) {
                        "              [--refine 0..6] [--iterations 100] [--tolerance 1e-9] "
                        "[--output surface]\n"
                        "Без входного файла: x=cos(t), y=sin(t), z=0.35*cos(2t).\n"
-                       "Результаты: .obj, .html, .csv. Формулы: python3 tools/formula.py --help\n";
+                       "Результаты: .obj, анимированный .html, .csv. "
+                       "Формулы: python3 tools/formula.py --help\n";
                 return 0;
             } else
                 throw std::runtime_error("Неизвестный аргумент: " + arg);
@@ -88,10 +90,37 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Не удалось открыть журнал результата.");
         history << "level,iteration,area\n" << std::setprecision(17);
         bool converged = false;
+        std::vector<minimal::AnimationTopology> topologies;
+        std::vector<minimal::AnimationFrame> frames;
+        size_t stored_points = 0;
+        constexpr size_t animation_point_budget = 250'000;
         for (int level = 0; level <= levels; ++level) {
             if (level)
                 minimal::refine(mesh);
-            auto result = minimal::minimize(mesh, iterations, tolerance);
+            const size_t topology = topologies.size();
+            topologies.push_back({mesh.faces});
+            auto record = [&](const minimal::Mesh &state, int iteration, double area,
+                              double residual, bool final) {
+                if (!frames.empty() && frames.back().topology == topology &&
+                    frames.back().iteration == iteration) {
+                    frames.back().vertices = state.vertices;
+                    frames.back().area = area;
+                    frames.back().residual = residual;
+                    return;
+                }
+                const size_t points = state.vertices.size();
+                if (stored_points + points > animation_point_budget && !final)
+                    return;
+                while (stored_points + points > animation_point_budget && frames.size() > 1) {
+                    stored_points -= frames[1].vertices.size();
+                    frames.erase(frames.begin() + 1);
+                }
+                if (stored_points + points > animation_point_budget)
+                    return;
+                frames.push_back({state.vertices, topology, area, residual, level, iteration});
+                stored_points += points;
+            };
+            auto result = minimal::minimize(mesh, iterations, tolerance, record);
             converged = result.converged;
             for (size_t i = 0; i < result.areas.size(); ++i)
                 history << level << ',' << i << ',' << result.areas[i] << '\n';
@@ -106,7 +135,7 @@ int main(int argc, char **argv) {
         if (!history)
             throw std::runtime_error("Ошибка записи журнала.");
         minimal::write_obj(mesh, prefix + ".obj");
-        minimal::write_html(mesh, prefix + ".html");
+        minimal::write_html(mesh, prefix + ".html", topologies, frames);
         std::cout << "Сохранены " << prefix << ".obj, .html, .csv\n";
         return converged ? 0 : 2;
     } catch (std::exception const &e) {
