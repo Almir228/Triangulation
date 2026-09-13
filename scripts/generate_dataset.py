@@ -145,7 +145,7 @@ def _split_for(index: int, total: int) -> str:
 
 def generate_sample(index: int, total: int, base_seed: int, output_dir: Path,
                     solver: Path, boundary_count: int, query_count: int,
-                    raw_contour_count: int, refine: int, iterations: int,
+                    raw_contour_count: int, solver_mode: str, refine: int, iterations: int,
                     remesh_passes: int, tolerance: float, near_fraction: float,
                     query_margin: float, keep_intermediates: bool = False,
                     allow_unconverged: bool = False) -> Dict[str, object]:
@@ -165,7 +165,7 @@ def generate_sample(index: int, total: int, base_seed: int, output_dir: Path,
         # prevents the solver's best-fit normal heuristic from changing the
         # projection plane when the boundary has a strong Z waviness.
         command = [str(solver), "--contour", str(contour_path), "--normal", "0", "0", "1",
-                   "--mode", "spatial",
+                   "--mode", solver_mode,
                    "--refine", str(refine), "--iterations", str(iterations),
                    "--remesh-passes", str(remesh_passes), "--tolerance", str(tolerance),
                    "--output", str(prefix)]
@@ -190,7 +190,7 @@ def generate_sample(index: int, total: int, base_seed: int, output_dir: Path,
         norm_vertices = _normalize(mesh_vertices, center, scale)
         queries = _query_points(norm_vertices, faces, rng, query_count, near_fraction, query_margin)
         distances = signed_distance(queries, norm_vertices, faces)
-        solver_meta = {"mode": "spatial", "refine": int(refine), "iterations": int(iterations),
+        solver_meta = {"mode": solver_mode, "refine": int(refine), "iterations": int(iterations),
                        "remesh_passes": int(remesh_passes), "tolerance": float(tolerance),
                        "returncode": int(completed.returncode),
                        "converged": bool(completed.returncode == 0)}
@@ -241,9 +241,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--boundary-size", type=int, default=64)
     parser.add_argument("--queries", type=int, default=8192)
     parser.add_argument("--raw-contour-size", type=int, default=64)
+    parser.add_argument("--solver-mode", choices=("graph", "spatial"), default="graph",
+                        help="stable graph teacher, or experimental free-XYZ spatial teacher")
     parser.add_argument("--refine", type=int, default=2)
     parser.add_argument("--iterations", type=int, default=120)
-    parser.add_argument("--remesh-passes", type=int, default=3)
+    parser.add_argument("--remesh-passes", type=int, default=None)
     parser.add_argument("--tolerance", type=float, default=1e-8)
     parser.add_argument("--near-fraction", type=float, default=0.5)
     parser.add_argument("--query-margin", type=float, default=0.35)
@@ -273,6 +275,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise SystemExit("samples, boundary-size and queries must be positive")
     if not 0.0 <= args.near_fraction <= 1.0:
         raise SystemExit("near-fraction must be between 0 and 1")
+    if args.remesh_passes is None:
+        args.remesh_passes = 0 if args.solver_mode == "graph" else 3
+    if args.solver_mode == "graph" and args.remesh_passes != 0:
+        raise SystemExit("remesh-passes must be 0 with solver-mode graph")
     solver = find_solver(args.solver)
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -280,7 +286,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for index in range(args.samples):
         record = generate_sample(index, args.samples, args.seed, output_dir, solver,
                                  args.boundary_size, args.queries, args.raw_contour_size,
-                                 args.refine, args.iterations, args.remesh_passes,
+                                 args.solver_mode, args.refine, args.iterations, args.remesh_passes,
                                  args.tolerance, args.near_fraction, args.query_margin,
                                  args.keep_intermediates, args.allow_unconverged)
         records.append(record)
