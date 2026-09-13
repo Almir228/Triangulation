@@ -93,7 +93,7 @@ const playButton=document.getElementById('play'),resetButton=document.getElement
 const timeline=document.getElementById('timeline'),speed=document.getElementById('speed');
 const wire=document.getElementById('wire'),ghost=document.getElementById('ghost'),recordButton=document.getElementById('record');
 timeline.max=Math.max(0,frames.length-1);recordButton.disabled=frames.length<2||!window.MediaRecorder||!canvas.captureStream;
-let playhead=0,playing=false,lastTime=0,yaw=.42,pitch=-.9,zoom=1,drag=null,recorder=null,chunks=[];
+let playhead=0,playing=false,lastTime=0,playGeneration=0,yaw=.42,pitch=-.9,zoom=1,drag=null,recorder=null,chunks=[];
 const bounds={min:[Infinity,Infinity,Infinity],max:[-Infinity,-Infinity,-Infinity]};
 for(const frame of frames)for(const p of frame.v)for(let k=0;k<3;k++){bounds.min[k]=Math.min(bounds.min[k],p[k]);bounds.max[k]=Math.max(bounds.max[k],p[k]);}
 const center=bounds.min.map((v,k)=>(v+bounds.max[k])/2),radius=Math.max(...bounds.max.map((v,k)=>v-bounds.min[k]))||1;
@@ -126,10 +126,10 @@ function draw(){
  document.getElementById('stats').textContent=`Кадр ${Math.min(frames.length,Math.floor(playhead)+1)} из ${frames.length} · уровень сетки ${frame.l} · итерация ${frame.i} · ${frame.v.length} вершин · ${faces.length} треугольников · невязка ${frame.r.toExponential(2)}`;
  timeline.value=playhead;
 }
-function setPlaying(value){playing=value;playButton.textContent=playing?'Ⅱ Пауза':'▶ Запустить';if(playing){if(playhead>=frames.length-1)playhead=0;lastTime=performance.now();requestAnimationFrame(tick);}}
+function setPlaying(value){playing=value;const generation=++playGeneration;playButton.textContent=playing?'Ⅱ Пауза':'▶ Запустить';if(playing){if(playhead>=frames.length-1)playhead=0;lastTime=performance.now();requestAnimationFrame(now=>tick(now,generation));}}
 function finishRecording(){if(recorder&&recorder.state==='recording')setTimeout(()=>recorder.stop(),250);}
-function tick(now){if(!playing)return;const dt=Math.min(100,now-lastTime);lastTime=now;playhead+=dt*Number(speed.value)/650;if(playhead>=frames.length-1){playhead=frames.length-1;setPlaying(false);draw();finishRecording();return;}draw();requestAnimationFrame(tick);}
-playButton.onclick=()=>setPlaying(!playing);resetButton.onclick=()=>{setPlaying(false);playhead=0;draw();};timeline.oninput=()=>{setPlaying(false);playhead=Number(timeline.value);draw();};
+function tick(now,generation){if(!playing||generation!==playGeneration)return;const dt=Math.min(100,now-lastTime);lastTime=now;playhead+=dt*Number(speed.value)/650;if(playhead>=frames.length-1){playhead=frames.length-1;setPlaying(false);draw();finishRecording();return;}draw();requestAnimationFrame(next=>tick(next,generation));}
+playButton.onclick=()=>{if(playing){setPlaying(false);return;}const requested=Number(timeline.value);if(Number.isFinite(requested))playhead=Math.max(0,Math.min(frames.length-1,requested));setPlaying(true);};resetButton.onclick=()=>{setPlaying(false);playhead=0;draw();};timeline.onpointerdown=()=>setPlaying(false);timeline.oninput=()=>{setPlaying(false);playhead=Number(timeline.value);draw();};
 wire.onchange=ghost.onchange=draw;canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(!drag)return;yaw+=(e.clientX-drag[0])*.008;pitch+=(e.clientY-drag[1])*.008;drag=[e.clientX,e.clientY];draw();};canvas.onpointerup=canvas.onpointercancel=()=>drag=null;
 canvas.addEventListener('wheel',e=>{e.preventDefault();zoom=Math.min(4,Math.max(.2,zoom*Math.exp(-e.deltaY*.001)));draw();},{passive:false});
 recordButton.onclick=()=>{setPlaying(false);chunks=[];playhead=0;draw();const stream=canvas.captureStream(30),options={};for(const type of ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'])if(MediaRecorder.isTypeSupported(type)){options.mimeType=type;break;}recorder=new MediaRecorder(stream,options);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};recorder.onstop=()=>{const blob=new Blob(chunks,{type:recorder.mimeType||'video/webm'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='minimal-surface.webm';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);for(const control of [playButton,resetButton,timeline,speed,recordButton])control.disabled=false;};for(const control of [playButton,resetButton,timeline,speed,recordButton])control.disabled=true;recorder.start();setPlaying(true);};

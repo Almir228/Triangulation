@@ -34,5 +34,6 @@ with tempfile.TemporaryDirectory() as directory:
     html = (root/'surface.html').read_text()
     assert '<canvas' in html
     assert 'Скачать WebM' in html and 'MediaRecorder' in html
+    assert 'Number(timeline.value)' in html and 'playGeneration' in html
     assert html.count('{v:') >= 2
 print('CLI: validation, formula inputs, OBJ indices, monotonic area and nonconvergence status passed')
