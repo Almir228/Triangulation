@@ -9,9 +9,16 @@ __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
 .venv/
+.venv-ml/
 .env
 .env.*
 !.env.example
+
+# Generated ML data, checkpoints and experiment logs
+/dataset/
+/datasets/
+/runs/
+*.pt
 
 /triangulation
 

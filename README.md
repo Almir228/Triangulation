@@ -4,6 +4,10 @@
 
 Результат — сетка OBJ, автономная интерактивная HTML-визуализация и CSV с историей площади. C++-часть использует только стандартную библиотеку; для ввода формул нужен Python 3.9+ без дополнительных пакетов.
 
+В репозитории также есть экспериментальный Python/PyTorch-прототип: C++-решатель
+генерирует пары «пространственный контур → минимальная поверхность», а условная
+нейросеть учится предсказывать локальное неявное поле поверхности.
+
 ![Поверхность и убывание площади](examples/preview.png)
 
 ## Постановка и область применимости
@@ -158,6 +162,38 @@ python3 tests/check_cli.py ./build/triangulation
 
 Проверяются градиент и гессиан режима `graph`, полный пространственный градиент конечными разностями, неподвижность границы, убывание площади, плоское решение, сетка с нависанием, инвариантность относительно переноса/поворота/масштаба и уменьшение ошибки на графике Шерка при сгущении. Отдельно проверяются ошибки формул и запрещённый синтаксис. Тесты выполняются и в Release-сборке. GitHub Actions повторяет сборку и весь набор CTest на Linux и macOS.
 
+## Эксперимент с нейросетью
+
+Сначала соберите решатель и создайте небольшой настоящий датасет:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j2
+python3 scripts/generate_dataset.py --smoke --output-dir dataset/smoke
+```
+
+Затем установите ML-зависимости в отдельное окружение и выполните короткий запуск:
+
+```bash
+python3 -m venv .venv-ml
+source .venv-ml/bin/activate
+python -m pip install -r requirements-ml.txt
+python scripts/train_implicit.py dataset/smoke/manifest.jsonl \
+  --output runs/smoke --epochs 20 --batch-size 1 --query-count 128 \
+  --boundary-count 32 --hidden-dim 32 --latent-dim 16 \
+  --layers 2 --frequencies 2 --eikonal-samples 16 --device cpu
+python scripts/predict_implicit.py runs/smoke/best.pt \
+  dataset/smoke/sample_000000.npz --output runs/smoke/prediction.obj
+python scripts/evaluate_prediction.py dataset/smoke/sample_000000.npz \
+  runs/smoke/prediction.obj --output runs/smoke/evaluation.json
+```
+
+Генератор, формат NPZ и правила ориентации описаны в
+[`docs/DATASET_RU.md`](docs/DATASET_RU.md). Архитектура, функция потерь, обучение,
+инференс и ограничения открытого signed distance — в
+[`docs/MODEL_RU.md`](docs/MODEL_RU.md). Это baseline для измеримого эксперимента:
+пока он не гарантирует сохранение края или меньшую площадь, чем численный решатель.
+
 ## Структура
 
 ```text
@@ -168,6 +204,12 @@ src/obj.cpp              Загрузка и проверка сетки OBJ
 src/remesh.cpp           Качество сетки, перевороты рёбер и сглаживание
 src/viewer.cpp           HTML-анимация и экспорт WebM в браузере
 tools/formula.py         Дискретизация формул средствами Python
+scripts/generate_dataset.py  Генерация NPZ-датасета через C++-решатель
+scripts/train_implicit.py    Обучение условного неявного поля
+scripts/predict_implicit.py  Marching Cubes и экспорт предсказания OBJ
+scripts/evaluate_prediction.py  Метрики предсказания относительно target
+python/minsurf_nn/       Модель, loader и функция потерь
+docs/                    Русская документация датасета и модели
 tests/                   Проверки численного метода и выражений
 examples/                Входные данные и воспроизводимые результаты
 ```
