@@ -10,8 +10,10 @@ given seed and delegates surface optimization to the repository's C++ CLI.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import shutil
 import subprocess
 import tempfile
@@ -21,55 +23,138 @@ from typing import Dict, Sequence, Tuple, Optional
 import numpy as np
 
 try:
-    from dataset_utils import json_dumps, read_obj_triangles, resample_closed_curve, signed_distance
+    from dataset_utils import (canonicalize_contour, is_strictly_convex_xy,
+                               json_dumps, read_obj_triangles,
+                               resample_closed_curve, signed_distance)
 except ImportError:  # Allow ``python -m scripts.generate_dataset`` from repo root.
-    from scripts.dataset_utils import (json_dumps, read_obj_triangles,
+    from scripts.dataset_utils import (canonicalize_contour, is_strictly_convex_xy,
+                                       json_dumps, read_obj_triangles,
                                        resample_closed_curve, signed_distance)
 
 
-def _shape_parameters(rng: np.random.Generator) -> Dict[str, float]:
+def _contour_quality(points: np.ndarray) -> Dict[str, float]:
+    """Return scale-free sampled separation and curvature diagnostics."""
+
+    count = len(points)
+    centered = points - points.mean(axis=0)
+    diameter = max(2.0 * float(np.linalg.norm(centered, axis=1).max()), 1e-12)
+    differences = points[:, None, :] - points[None, :, :]
+    squared_distances = np.sum(differences * differences, axis=2)
+    indices = np.arange(count)
+    cyclic_steps = np.abs(indices[:, None] - indices[None, :])
+    cyclic_steps = np.minimum(cyclic_steps, count - cyclic_steps)
+    # Pairs closer along the parameterized curve are not distinct branches.
+    separated = cyclic_steps > max(2, count // 32)
+    minimum_separation = float(np.sqrt(np.min(squared_distances[separated])))
+
+    dt = 2.0 * math.pi / count
+    first = (np.roll(points, -1, axis=0) - np.roll(points, 1, axis=0)) / (2.0 * dt)
+    second = (np.roll(points, -1, axis=0) - 2.0 * points +
+              np.roll(points, 1, axis=0)) / (dt * dt)
+    speed = np.linalg.norm(first, axis=1)
+    curvature = np.linalg.norm(np.cross(first, second), axis=1) / np.maximum(speed, 1e-9) ** 3
     return {
-        "z_1": float(rng.uniform(-0.22, 0.22)),
-        "z_2": float(rng.uniform(-0.18, 0.18)),
-        "z_3": float(rng.uniform(-0.12, 0.12)),
-        "phase": float(rng.uniform(0.0, 2.0 * math.pi)),
-        "tilt_x": float(rng.uniform(-0.16, 0.16)),
-        "tilt_y": float(rng.uniform(-0.16, 0.16)),
-        "z_offset": float(rng.uniform(-0.25, 0.25)),
-        "semi_major": float(rng.uniform(0.9, 1.25)),
-        "semi_minor": float(rng.uniform(0.78, 1.0)),
-        "xy_rotation": float(rng.uniform(0.0, 2.0 * math.pi)),
+        "minimum_separation_over_diameter": minimum_separation / diameter,
+        "maximum_curvature_times_diameter": float(np.max(curvature)) * diameter,
     }
 
 
-def generate_contour(rng: np.random.Generator, count: int = 64) -> Tuple[np.ndarray, Dict[str, object]]:
-    """Generate a smooth closed contour with a convex XY projection.
+def generate_contour(rng: np.random.Generator, count: int = 64,
+                     fourier_modes: int = 5, fourier_decay: float = 2.5,
+                     xy_variation: float = 0.22,
+                     nonplanarity: float = 0.32) -> Tuple[np.ndarray, Dict[str, object]]:
+    """Generate a smooth Fourier contour with a strictly convex XY projection.
 
-    An exact ellipse preserves the convex projection required by the current
-    C++ fan triangulator.  Z harmonics and a tilt make the spatial boundary
-    nonplanar while keeping the orientation fixed.
+    XY is constructed from the support function of a convex curve.  Positivity
+    of ``h + h''`` is enforced before an affine stretch, so the generated
+    projection stays convex while being substantially richer than an ellipse.
+    A Fourier height profile supplies nonplanarity.  Its affine component is
+    removed so the discrete oriented area vector already points along +Z.
     """
 
     if count < 8:
         raise ValueError("contour sample count must be at least 8")
-    params = _shape_parameters(rng)
+    if fourier_modes < 2:
+        raise ValueError("fourier_modes must be at least 2")
+    if fourier_decay <= 1.0 or xy_variation < 0.0 or nonplanarity < 0.0:
+        raise ValueError("fourier_decay must exceed 1; amplitudes must be non-negative")
+
     t = 2.0 * math.pi * np.arange(count, dtype=np.float64) / count
-    phase = params["phase"]
-    # An exact ellipse gives a strictly convex XY projection, which is the
-    # input class accepted by the current fan triangulator.  The 3D Z profile
-    # below still supplies several independent smooth contour families.
-    x0 = params["semi_major"] * np.cos(t)
-    y0 = params["semi_minor"] * np.sin(t)
-    rotation = params["xy_rotation"]
-    x = x0 * np.cos(rotation) - y0 * np.sin(rotation)
-    y = x0 * np.sin(rotation) + y0 * np.cos(rotation)
-    z = (params["z_offset"] + params["z_1"] * np.cos(t + phase) +
-         params["z_2"] * np.sin(2 * t - phase) + params["z_3"] * np.cos(3 * t))
-    # A linear tilt is still smooth and helps avoid an accidental symmetry.
-    z = z + params["tilt_x"] * x + params["tilt_y"] * y
+    xy_modes = np.arange(2, fourier_modes + 1, dtype=np.float64)
+    xy_cos = rng.normal(size=len(xy_modes)) * xy_variation / xy_modes ** fourier_decay
+    xy_sin = rng.normal(size=len(xy_modes)) * xy_variation / xy_modes ** fourier_decay
+
+    angles = xy_modes[:, None] * t[None, :]
+    curvature_radius_perturbation = np.sum(
+        (1.0 - xy_modes[:, None] ** 2) *
+        (xy_cos[:, None] * np.cos(angles) + xy_sin[:, None] * np.sin(angles)), axis=0)
+    # Scale all non-circular modes together until the curvature radius has a
+    # comfortable positive margin.  This is deterministic for the sample seed.
+    minimum_radius = float(np.min(1.0 + curvature_radius_perturbation))
+    convexity_scale = 1.0
+    if minimum_radius < 0.25:
+        convexity_scale = min(1.0, 0.75 / max(1.0 - minimum_radius, 1e-12))
+        xy_cos *= convexity_scale
+        xy_sin *= convexity_scale
+
+    h = 1.0 + np.sum(
+        xy_cos[:, None] * np.cos(angles) + xy_sin[:, None] * np.sin(angles), axis=0)
+    h_prime = np.sum(
+        xy_modes[:, None] * (-xy_cos[:, None] * np.sin(angles) +
+                             xy_sin[:, None] * np.cos(angles)), axis=0)
+    x0 = h * np.cos(t) - h_prime * np.sin(t)
+    y0 = h * np.sin(t) + h_prime * np.cos(t)
+
+    semi_major = float(rng.uniform(0.85, 1.35))
+    semi_minor = float(rng.uniform(0.65, 1.05))
+    rotation = float(rng.uniform(0.0, 2.0 * math.pi))
+    stretched_x = semi_major * x0
+    stretched_y = semi_minor * y0
+    x = stretched_x * math.cos(rotation) - stretched_y * math.sin(rotation)
+    y = stretched_x * math.sin(rotation) + stretched_y * math.cos(rotation)
+
+    z_modes = np.arange(1, fourier_modes + 2, dtype=np.float64)
+    z_cos = rng.normal(size=len(z_modes)) / z_modes ** fourier_decay
+    z_sin = rng.normal(size=len(z_modes)) / z_modes ** fourier_decay
+    z_angles = z_modes[:, None] * t[None, :]
+    z_profile = np.sum(
+        z_cos[:, None] * np.cos(z_angles) + z_sin[:, None] * np.sin(z_angles), axis=0)
+    z_profile -= z_profile.mean()
+    peak = max(float(np.max(np.abs(z_profile))), 1e-12)
+    z_amplitude = float(rng.uniform(0.2, 1.0) * nonplanarity) if nonplanarity else 0.0
+    z = z_profile * (z_amplitude / peak) + float(rng.uniform(-0.25, 0.25))
+
+    # Remove the affine height component that tilts the vector area away from
+    # +Z.  Unlike a post-hoc 3D rotation, this preserves the convex projection.
+    provisional = np.column_stack((x, y, z))
+    area = 0.5 * np.sum(np.cross(provisional, np.roll(provisional, -1, axis=0)), axis=0)
+    if area[2] <= 1e-12:
+        raise ValueError("generated contour has degenerate projected area")
+    z = z + (area[0] / area[2]) * x + (area[1] / area[2]) * y
     points = np.column_stack((x, y, z)).astype(np.float64)
-    metadata = {"family": "convex_ellipse_harmonic", "parameters": params,
-                "raw_contour_count": int(count)}
+    corrected_area = 0.5 * np.sum(np.cross(points, np.roll(points, -1, axis=0)), axis=0)
+
+    metadata: Dict[str, object] = {
+        "family": "convex_support_fourier",
+        "parameters": {
+            "fourier_modes": int(fourier_modes),
+            "fourier_decay": float(fourier_decay),
+            "xy_variation": float(xy_variation),
+            "nonplanarity_limit": float(nonplanarity),
+            "z_amplitude": z_amplitude,
+            "semi_major": semi_major,
+            "semi_minor": semi_minor,
+            "xy_rotation": rotation,
+            "convexity_scale": float(convexity_scale),
+            "xy_cos": xy_cos.tolist(),
+            "xy_sin": xy_sin.tolist(),
+            "z_cos": z_cos.tolist(),
+            "z_sin": z_sin.tolist(),
+        },
+        "quality": _contour_quality(points),
+        "generated_vector_area": corrected_area.tolist(),
+        "raw_contour_count": int(count),
+    }
     return points, metadata
 
 
@@ -97,14 +182,12 @@ def find_solver(requested: Optional[str]) -> Path:
     raise FileNotFoundError("could not find triangulation; build it or pass --solver PATH")
 
 
-def _normalize(points: np.ndarray, center: np.ndarray, scale: float) -> np.ndarray:
-    return ((np.asarray(points, dtype=np.float64) - center) / scale).astype(np.float32)
-
-
 def _query_points(vertices: np.ndarray, faces: np.ndarray, rng: np.random.Generator,
                   count: int, near_fraction: float, margin: float) -> np.ndarray:
-    if count < 1:
-        raise ValueError("query count must be positive")
+    if count < 0:
+        raise ValueError("query count must be non-negative")
+    if count == 0:
+        return np.empty((0, 3), dtype=np.float32)
     low = vertices.min(axis=0) - margin
     high = vertices.max(axis=0) + margin
     uniform_count = int(round(count * (1.0 - near_fraction)))
@@ -129,18 +212,89 @@ def _query_points(vertices: np.ndarray, faces: np.ndarray, rng: np.random.Genera
     return queries.astype(np.float32)
 
 
-def _split_for(index: int, total: int) -> str:
+def _split_for(index: int, total: int, base_seed: int = 0) -> str:
     if total <= 1:
         return "train"
     if total == 2:
         return "val" if index == 1 else "train"
-    # Keep the split deterministic and ensure tiny datasets still have a
-    # useful validation sample when there are at least three examples.
-    if total >= 3 and index == total - 1:
+    # Keep tiny smoke datasets useful and preserve their historical ordering.
+    if total < 20 and index == total - 1:
         return "test"
-    if total >= 3 and index == total - 2:
+    if total < 20 and index == total - 2:
         return "val"
-    return "train"
+    if total < 20:
+        return "train"
+    # A hash avoids putting one contiguous region of the deterministic contour
+    # stream into validation/test.  The assignment is stable across processes.
+    digest = hashlib.blake2b(f"{base_seed}:{index}".encode("ascii"), digest_size=8).digest()
+    bucket = int.from_bytes(digest, "little") % 10_000
+    if bucket < 9_000:
+        return "train"
+    return "val" if bucket < 9_500 else "test"
+
+
+def _atomic_savez(path: Path, **arrays: np.ndarray) -> None:
+    """Write a compressed NPZ without exposing a partially written sample."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="wb", prefix=f".{path.stem}.", suffix=".tmp",
+                dir=path.parent, delete=False) as stream:
+            temporary_path = Path(stream.name)
+            np.savez_compressed(stream, **arrays)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def prepare_canonical_contour(index: int, base_seed: int, boundary_count: int,
+                              raw_contour_count: int, fourier_modes: int = 5,
+                              fourier_decay: float = 2.5, xy_variation: float = 0.22,
+                              nonplanarity: float = 0.32, min_separation: float = 0.025,
+                              max_curvature: float = 25.0, contour_variant: int = 0
+                              ) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
+                                         Dict[str, np.ndarray], Dict[str, object],
+                                         np.random.Generator]:
+    """Reproduce the canonical contour without running the Plateau solver.
+
+    The returned generator retains the exact state following contour creation,
+    which keeps subsequent query sampling in ``generate_sample`` unchanged.
+    """
+
+    seed = int(base_seed + index)
+    if contour_variant < 0:
+        raise ValueError("contour_variant must be non-negative")
+    rng_seed = seed if contour_variant == 0 else np.random.SeedSequence([seed, contour_variant])
+    rng = np.random.default_rng(rng_seed)
+    for attempt in range(128):
+        raw_contour, contour_meta = generate_contour(
+            rng, raw_contour_count, fourier_modes=fourier_modes,
+            fourier_decay=fourier_decay, xy_variation=xy_variation,
+            nonplanarity=nonplanarity)
+        quality = contour_meta["quality"]
+        if (quality["minimum_separation_over_diameter"] < min_separation or
+                quality["maximum_curvature_times_diameter"] > max_curvature):
+            continue
+        original_boundary = resample_closed_curve(
+            raw_contour, boundary_count).astype(np.float64)
+        boundary, transform = canonicalize_contour(original_boundary, margin=0.1)
+        if is_strictly_convex_xy(boundary):
+            break
+    else:
+        raise RuntimeError("could not generate a canonical contour with convex XY projection")
+    contour_meta["generation_attempt"] = attempt + 1
+    contour_meta["variant"] = int(contour_variant)
+    contour_meta["canonical_vector_area"] = transform["area_after"].tolist()
+    contour_meta["original_vector_area"] = transform["area_before"].tolist()
+    dense_boundary = ((raw_contour - transform["center"]) @
+                      transform["rotation"].T / float(transform["scale"]))
+    return (boundary.astype(np.float32), dense_boundary.astype(np.float32),
+            original_boundary, transform, contour_meta, rng)
 
 
 def generate_sample(index: int, total: int, base_seed: int, output_dir: Path,
@@ -148,22 +302,29 @@ def generate_sample(index: int, total: int, base_seed: int, output_dir: Path,
                     raw_contour_count: int, solver_mode: str, refine: int, iterations: int,
                     remesh_passes: int, tolerance: float, near_fraction: float,
                     query_margin: float, keep_intermediates: bool = False,
-                    allow_unconverged: bool = False) -> Dict[str, object]:
+                    allow_unconverged: bool = False, fourier_modes: int = 5,
+                    fourier_decay: float = 2.5, xy_variation: float = 0.22,
+                    nonplanarity: float = 0.32, min_separation: float = 0.025,
+                    max_curvature: float = 25.0,
+                    contour_variant: int = 0) -> Dict[str, object]:
     seed = int(base_seed + index)
-    rng = np.random.default_rng(seed)
-    raw_contour, contour_meta = generate_contour(rng, raw_contour_count)
-    boundary = resample_closed_curve(raw_contour, boundary_count).astype(np.float64)
+    boundary, dense_boundary, original_boundary, transform, contour_meta, rng = (
+        prepare_canonical_contour(
+            index=index, base_seed=base_seed, boundary_count=boundary_count,
+            raw_contour_count=raw_contour_count, fourier_modes=fourier_modes,
+            fourier_decay=fourier_decay, xy_variation=xy_variation,
+            nonplanarity=nonplanarity, min_separation=min_separation,
+            max_curvature=max_curvature, contour_variant=contour_variant))
     sample_name = f"sample_{index:06d}"
     target_path = output_dir / f"{sample_name}.npz"
     with tempfile.TemporaryDirectory(prefix="triangulation_dataset_") as temporary:
         temporary_dir = Path(temporary)
         contour_path = temporary_dir / "contour.csv"
         prefix = temporary_dir / "surface"
-        _write_contour(contour_path, raw_contour)
-        # The generated XY projection is counter-clockwise and the +Z normal
-        # fixes one orientation for every sample.  Passing it explicitly also
-        # prevents the solver's best-fit normal heuristic from changing the
-        # projection plane when the boundary has a strong Z waviness.
+        _write_contour(contour_path, boundary)
+        # The actual input has already been centered, rotated and scaled.  The
+        # explicit normal now agrees with its oriented area instead of merely
+        # overriding the solver's projection heuristic.
         command = [str(solver), "--contour", str(contour_path), "--normal", "0", "0", "1",
                    "--mode", solver_mode,
                    "--refine", str(refine), "--iterations", str(iterations),
@@ -180,22 +341,19 @@ def generate_sample(index: int, total: int, base_seed: int, output_dir: Path,
         if not obj_path.is_file():
             raise RuntimeError("solver returned without writing an OBJ for sample {}".format(index))
         mesh_vertices, faces = read_obj_triangles(obj_path)
-        # Use the exact boundary stored in the NPZ.  Raw NPY inference follows
-        # the same rule, so training and prediction share one normalization.
-        center = boundary.mean(axis=0)
-        scale = float(np.max(np.linalg.norm(boundary - center, axis=1)))
-        if not np.isfinite(scale) or scale <= 0:
-            raise ValueError("generated contour has invalid normalization scale")
-        norm_boundary = _normalize(boundary, center, scale)
-        norm_vertices = _normalize(mesh_vertices, center, scale)
+        norm_boundary = boundary.astype(np.float32)
+        norm_vertices = mesh_vertices.astype(np.float32)
+        if np.max(np.abs(norm_vertices)) > 1.0 + 1e-6:
+            raise ValueError("solver surface escaped the canonical cube")
         queries = _query_points(norm_vertices, faces, rng, query_count, near_fraction, query_margin)
-        distances = signed_distance(queries, norm_vertices, faces)
+        distances = (signed_distance(queries, norm_vertices, faces)
+                     if len(queries) else np.empty((0,), dtype=np.float32))
         solver_meta = {"mode": solver_mode, "refine": int(refine), "iterations": int(iterations),
                        "remesh_passes": int(remesh_passes), "tolerance": float(tolerance),
                        "returncode": int(completed.returncode),
                        "converged": bool(completed.returncode == 0)}
         metadata = {
-            "format_version": 1,
+            "format_version": 2,
             "sample_id": sample_name,
             "seed": seed,
             "contour": contour_meta,
@@ -207,28 +365,39 @@ def generate_sample(index: int, total: int, base_seed: int, output_dir: Path,
                 "definition": "distance to nearest triangle; sign from nearest listed face normal",
                 "scope": "local_for_open_surface",
             },
-            "normalization": {"center": center.tolist(), "scale": scale,
-                               "formula": "normalized=(world-center)/scale"},
-            "counts": {"boundary": int(len(norm_boundary)), "queries": int(len(queries)),
+            "normalization": {
+                "center": transform["center"].tolist(),
+                "rotation": transform["rotation"].tolist(),
+                "scale": float(transform["scale"]),
+                "margin": float(transform["margin"]),
+                "formula": "canonical=rotation@(world-center)/scale",
+            },
+            "counts": {"boundary": int(len(norm_boundary)),
+                       "dense_boundary": int(len(dense_boundary)), "queries": int(len(queries)),
                        "surface_vertices": int(len(norm_vertices)), "faces": int(len(faces))},
         }
-        np.savez_compressed(
+        _atomic_savez(
             target_path,
             boundary_points=norm_boundary.astype(np.float32),
+            dense_boundary_points=dense_boundary,
             query_points=queries.astype(np.float32),
             signed_distance=distances.astype(np.float32),
             surface_vertices=norm_vertices.astype(np.float32),
             faces=faces.astype(np.int32),
-            normalization_center=center.astype(np.float32),
-            normalization_scale=np.asarray(scale, dtype=np.float32),
+            normalization_center=transform["center"].astype(np.float32),
+            normalization_rotation=transform["rotation"].astype(np.float32),
+            normalization_scale=np.asarray(transform["scale"], dtype=np.float32),
             metadata=np.asarray(json_dumps(metadata)),
         )
         if keep_intermediates:
-            _write_contour(output_dir / f"{sample_name}_contour.csv", raw_contour)
+            _write_contour(output_dir / f"{sample_name}_contour.csv", boundary)
+            _write_contour(output_dir / f"{sample_name}_original_contour.csv", original_boundary)
     return {"path": target_path.relative_to(output_dir).as_posix(), "file": target_path.name,
+            "index": int(index),
             "sample_id": sample_name, "group_id": sample_name,
-            "split": _split_for(index, total), "seed": seed,
-            "counts": metadata["counts"], "normalization_scale": scale,
+            "split": _split_for(index, total, base_seed), "seed": seed,
+            "counts": metadata["counts"],
+            "normalization_scale": float(transform["scale"]),
             "solver": metadata["solver"], "contour_family": contour_meta["family"]}
 
 
@@ -241,6 +410,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--boundary-size", type=int, default=64)
     parser.add_argument("--queries", type=int, default=8192)
     parser.add_argument("--raw-contour-size", type=int, default=64)
+    parser.add_argument("--fourier-modes", type=int, default=5)
+    parser.add_argument("--fourier-decay", type=float, default=2.5)
+    parser.add_argument("--xy-variation", type=float, default=0.22)
+    parser.add_argument("--nonplanarity", type=float, default=0.32)
+    parser.add_argument("--min-separation", type=float, default=0.025,
+                        help="minimum sampled nonlocal distance divided by contour diameter")
+    parser.add_argument("--max-curvature", type=float, default=25.0,
+                        help="maximum sampled curvature times contour diameter")
     parser.add_argument("--solver-mode", choices=("graph", "spatial"), default="graph",
                         help="stable graph teacher, or experimental free-XYZ spatial teacher")
     parser.add_argument("--refine", type=int, default=2)
@@ -271,8 +448,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # need more iterations or the explicit --allow-unconverged escape hatch.
         args.refine = 0
         args.iterations = min(args.iterations, 80)
-    if args.samples < 1 or args.boundary_size < 3 or args.queries < 1:
-        raise SystemExit("samples, boundary-size and queries must be positive")
+    if args.samples < 1 or args.boundary_size < 3 or args.queries < 0:
+        raise SystemExit("samples and boundary-size must be positive; queries must be non-negative")
+    if (args.fourier_modes < 2 or args.fourier_decay <= 1.0 or
+            args.xy_variation < 0.0 or args.nonplanarity < 0.0 or
+            args.min_separation < 0.0 or args.max_curvature <= 0.0):
+        raise SystemExit("invalid Fourier contour or contour-quality parameters")
     if not 0.0 <= args.near_fraction <= 1.0:
         raise SystemExit("near-fraction must be between 0 and 1")
     if args.remesh_passes is None:
@@ -288,7 +469,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                  args.boundary_size, args.queries, args.raw_contour_size,
                                  args.solver_mode, args.refine, args.iterations, args.remesh_passes,
                                  args.tolerance, args.near_fraction, args.query_margin,
-                                 args.keep_intermediates, args.allow_unconverged)
+                                 args.keep_intermediates, args.allow_unconverged,
+                                 args.fourier_modes, args.fourier_decay, args.xy_variation,
+                                 args.nonplanarity, args.min_separation, args.max_curvature)
         records.append(record)
         print(f"generated {record['path']} ({record['counts']['surface_vertices']} vertices, "
               f"{record['counts']['faces']} faces)")

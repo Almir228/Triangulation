@@ -1,0 +1,133 @@
+{
+  "manifest": "dataset/plateau-100k-chebyshev-p10/manifest.jsonl",
+  "split": "validation",
+  "seed": 2026,
+  "boundary_count": 64,
+  "device": "mps",
+  "old_checkpoint": "runs/spectral-operator-p10-n64/best.pt",
+  "old_epoch": 47,
+  "hybrid_checkpoint": "runs/spectral-operator-p10-n64-hybrid-v2/best.pt",
+  "hybrid_epoch": 50,
+  "samples": [
+    {
+      "index": 2777,
+      "sample_id": "sample_002777",
+      "source_path": "../plateau-100k/shard-00002/sample_002777.npz",
+      "teacher_fit": {
+        "name": "teacher_fit",
+        "surface_z_rmse": 0.00028208895722598034,
+        "surface_z_max": 0.000880689208591752,
+        "boundary_z_rmse": 0.00010741618341644372,
+        "boundary_z_max": 0.00020124248735743644,
+        "boundary_distance_rmse": 0.00010680783444697478,
+        "boundary_root_residual_max": 2.7755575615628914e-17,
+        "root_failures": 0,
+        "inference_median_ms": null
+      },
+      "old": {
+        "name": "old",
+        "surface_z_rmse": 0.013682419395657303,
+        "surface_z_max": 0.03870819793526667,
+        "boundary_z_rmse": 0.020469298049023397,
+        "boundary_z_max": 0.038708197479014786,
+        "boundary_distance_rmse": 0.020390261593136925,
+        "boundary_root_residual_max": 5.898059818321144e-17,
+        "root_failures": 0,
+        "inference_median_ms": 1.7061039980035275,
+        "coefficient_relative_l2": 1.4858579422729052
+      },
+      "hybrid": {
+        "name": "hybrid",
+        "surface_z_rmse": 0.0021819374056624525,
+        "surface_z_max": 0.004857758143270972,
+        "boundary_z_rmse": 0.0026111790531302536,
+        "boundary_z_max": 0.004857761868558585,
+        "boundary_distance_rmse": 0.0025983013773079196,
+        "boundary_root_residual_max": 6.245004513516506e-17,
+        "root_failures": 0,
+        "inference_median_ms": 1.7765414959285408,
+        "coefficient_relative_l2": 1.0190282492428242
+      }
+    },
+    {
+      "index": 85448,
+      "sample_id": "sample_085448",
+      "source_path": "../plateau-100k/shard-00085/sample_085448.npz",
+      "teacher_fit": {
+        "name": "teacher_fit",
+        "surface_z_rmse": 0.0003174197531958319,
+        "surface_z_max": 0.0012218016460808032,
+        "boundary_z_rmse": 0.00013682072084640905,
+        "boundary_z_max": 0.0004020717731241935,
+        "boundary_distance_rmse": 0.0001348033224136373,
+        "boundary_root_residual_max": 6.071532165918825e-17,
+        "root_failures": 0,
+        "inference_median_ms": null
+      },
+      "old": {
+        "name": "old",
+        "surface_z_rmse": 0.013942397685224402,
+        "surface_z_max": 0.04685141408819667,
+        "boundary_z_rmse": 0.018157284754573712,
+        "boundary_z_max": 0.04685141425482668,
+        "boundary_distance_rmse": 0.01813613696314377,
+        "boundary_root_residual_max": 3.7470027081099033e-16,
+        "root_failures": 0,
+        "inference_median_ms": 1.7491669932496734,
+        "coefficient_relative_l2": 2.465810452434647
+      },
+      "hybrid": {
+        "name": "hybrid",
+        "surface_z_rmse": 0.0026689537885820802,
+        "surface_z_max": 0.009601850895241845,
+        "boundary_z_rmse": 0.002928716198645781,
+        "boundary_z_max": 0.009601851577270146,
+        "boundary_distance_rmse": 0.002901166750789186,
+        "boundary_root_residual_max": 3.469446951953614e-16,
+        "root_failures": 0,
+        "inference_median_ms": 1.6159790102392435,
+        "coefficient_relative_l2": 5.241743116110101
+      }
+    },
+    {
+      "index": 18321,
+      "sample_id": "sample_018321",
+      "source_path": "../plateau-100k/shard-00018/sample_018321.npz",
+      "teacher_fit": {
+        "name": "teacher_fit",
+        "surface_z_rmse": 0.00017611088055214852,
+        "surface_z_max": 0.0006848851265024601,
+        "boundary_z_rmse": 0.000175313049033269,
+        "boundary_z_max": 0.0004700070780571351,
+        "boundary_distance_rmse": 0.00017500475542485815,
+        "boundary_root_residual_max": 4.163336342344337e-17,
+        "root_failures": 0,
+        "inference_median_ms": null
+      },
+      "old": {
+        "name": "old",
+        "surface_z_rmse": 0.00478335421209538,
+        "surface_z_max": 0.011813540496474274,
+        "boundary_z_rmse": 0.005597679750948036,
+        "boundary_z_max": 0.011813538314752584,
+        "boundary_distance_rmse": 0.005592501292978997,
+        "boundary_root_residual_max": 8.326672684688674e-17,
+        "root_failures": 0,
+        "inference_median_ms": 1.7468124933657236,
+        "coefficient_relative_l2": 1.450894450738857
+      },
+      "hybrid": {
+        "name": "hybrid",
+        "surface_z_rmse": 0.0015464373332667813,
+        "surface_z_max": 0.005074072536609642,
+        "boundary_z_rmse": 0.002279200864522123,
+        "boundary_z_max": 0.005074067628352083,
+        "boundary_distance_rmse": 0.002276051622442069,
+        "boundary_root_residual_max": 1.1449174941446927e-16,
+        "root_failures": 0,
+        "inference_median_ms": 1.6370625016861595,
+        "coefficient_relative_l2": 1.309788110115334
+      }
+    }
+  ]
+}

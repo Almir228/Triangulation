@@ -9,9 +9,93 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Dict, Iterable, Tuple
 
 import numpy as np
+
+
+def oriented_area_vector(points: np.ndarray) -> np.ndarray:
+    """Return ``0.5 * sum((p_i-c) x (p_{i+1}-c))`` for a closed polygon."""
+
+    points = np.asarray(points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 3:
+        raise ValueError("points must have shape [N, 3], N >= 3")
+    if not np.all(np.isfinite(points)):
+        raise ValueError("points contain non-finite coordinates")
+    if np.allclose(points[0], points[-1], rtol=0.0, atol=1e-14):
+        points = points[:-1]
+    centered = points - points.mean(axis=0)
+    return 0.5 * np.cross(centered, np.roll(centered, -1, axis=0)).sum(axis=0)
+
+
+def rotation_to_positive_z(vector: np.ndarray) -> np.ndarray:
+    """Construct a proper rotation mapping a nonzero vector to ``+e_z``."""
+
+    vector = np.asarray(vector, dtype=np.float64)
+    if vector.shape != (3,) or not np.all(np.isfinite(vector)):
+        raise ValueError("vector must be a finite 3-vector")
+    length = float(np.linalg.norm(vector))
+    if length <= 1e-14:
+        raise ValueError("oriented area vector is degenerate")
+    source = vector / length
+    target = np.array([0.0, 0.0, 1.0])
+    cosine = float(np.clip(source @ target, -1.0, 1.0))
+    if cosine >= 1.0 - 1e-14:
+        return np.eye(3)
+    if cosine <= -1.0 + 1e-14:
+        # A half turn around x maps -z to +z and has determinant +1.
+        return np.diag([1.0, -1.0, -1.0])
+    axis_sine = np.cross(source, target)
+    skew = np.array([
+        [0.0, -axis_sine[2], axis_sine[1]],
+        [axis_sine[2], 0.0, -axis_sine[0]],
+        [-axis_sine[1], axis_sine[0], 0.0],
+    ])
+    return np.eye(3) + skew + skew @ skew / (1.0 + cosine)
+
+
+def canonicalize_contour(points: np.ndarray, margin: float = 0.1
+                         ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """Center, rotate vector area to ``+z`` and scale a contour into the cube."""
+
+    points = np.asarray(points, dtype=np.float64)
+    if not 0.0 <= margin < 1.0:
+        raise ValueError("margin must lie in [0, 1)")
+    center = points.mean(axis=0)
+    area_before = oriented_area_vector(points)
+    rotation = rotation_to_positive_z(area_before)
+    rotated = (points - center) @ rotation.T
+    radius = float(np.max(np.linalg.norm(rotated, axis=1)))
+    if not np.isfinite(radius) or radius <= 1e-14:
+        raise ValueError("contour has invalid scale")
+    scale = radius / (1.0 - margin)
+    canonical = rotated / scale
+    area_after = oriented_area_vector(canonical)
+    tolerance = 1e-10 * max(1.0, abs(float(area_after[2])))
+    if area_after[2] <= 0 or np.linalg.norm(area_after[:2]) > tolerance:
+        raise RuntimeError("failed to align contour vector area with +z")
+    transform = {
+        "center": center,
+        "rotation": rotation,
+        "scale": np.asarray(scale),
+        "area_before": area_before,
+        "area_after": area_after,
+        "margin": np.asarray(margin),
+    }
+    return canonical.astype(np.float64), transform
+
+
+def is_strictly_convex_xy(points: np.ndarray, tolerance: float = 1e-10) -> bool:
+    """Whether an ordered polygon is counter-clockwise and strictly convex in XY."""
+
+    points = np.asarray(points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 3:
+        return False
+    xy = points[:, :2]
+    first = np.roll(xy, -1, axis=0) - xy
+    second = np.roll(xy, -2, axis=0) - np.roll(xy, -1, axis=0)
+    turns = first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0]
+    return bool(np.all(turns > tolerance))
 
 
 def resample_closed_curve(points: np.ndarray, count: int) -> np.ndarray:

@@ -1,4 +1,5 @@
 """Manifest-backed, bounded-memory NPZ sampling in normalized coordinates."""
+from bisect import bisect_right
 import json
 from pathlib import Path
 
@@ -124,3 +125,106 @@ class SurfaceDataset(Dataset):
                     raise ValueError(f"Invalid target area in {record['path']}")
                 result["area"] = torch.tensor(area, dtype=torch.float32)
             return result
+
+
+class AugmentedChebyshevDataset(Dataset):
+    """Expose compact SO(2) packs as individual contour/coefficient pairs.
+
+    The manifest has one record per independently generated contour, while a
+    pack stores several rotations.  Keeping the split at record/group level
+    prevents rotated copies from leaking between training and validation.
+    """
+
+    def __init__(self, records, boundary_count=None):
+        if boundary_count is not None and boundary_count < 3:
+            raise ValueError("boundary_count must be at least three")
+        if not records:
+            raise ValueError("At least one augmentation-pack record is required")
+        self.records = records
+        self.boundary_count = boundary_count
+        counts = []
+        for record in records:
+            copies = int(record.get("copies", record.get("augmented_samples", 0)))
+            if copies < 1:
+                raise ValueError("Every augmentation-pack record needs copies >= 1")
+            counts.append(copies)
+        self.offsets = np.concatenate((np.asarray([0], dtype=np.int64),
+                                       np.cumsum(counts, dtype=np.int64)))
+
+    def __len__(self):
+        return int(self.offsets[-1])
+
+    def __getitem__(self, index):
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        record_index = bisect_right(self.offsets, index) - 1
+        copy_index = int(index - self.offsets[record_index])
+        record = self.records[record_index]
+        with np.load(record["path"], allow_pickle=False) as pack:
+            boundary = np.asarray(pack["boundary_points"][copy_index], dtype=np.float32)
+            coefficients = np.asarray(pack["coefficients"][copy_index], dtype=np.float32)
+            angle = float(pack["angles"][copy_index])
+            degree = int(pack["degree"])
+            source_index = int(pack["source_index"])
+        if self.boundary_count is not None and len(boundary) != self.boundary_count:
+            boundary = resample_boundary(boundary, self.boundary_count)
+        if (boundary.ndim != 2 or boundary.shape[1] != 3 or
+                coefficients.ndim != 1 or not np.all(np.isfinite(coefficients))):
+            raise ValueError(f"Invalid rotation pack arrays in {record['path']}")
+        return {
+            "boundary": torch.from_numpy(boundary.copy()),
+            "coefficients": torch.from_numpy(coefficients.copy()),
+            "angle": torch.tensor(angle, dtype=torch.float32),
+            "degree": torch.tensor(degree, dtype=torch.int64),
+            "source_index": torch.tensor(source_index, dtype=torch.int64),
+            "copy_index": torch.tensor(copy_index, dtype=torch.int64),
+        }
+
+
+class ChebyshevRotationPackDataset(Dataset):
+    """Load every rotated copy in a compact pack with one NPZ open.
+
+    Training batches have shape ``[packs, copies, points, 3]`` and can be
+    flattened to independent examples after loading.  This avoids opening the
+    same compressed file once for every rotation during each epoch.
+    """
+
+    def __init__(self, records, boundary_count=64):
+        if boundary_count is not None and boundary_count < 3:
+            raise ValueError("boundary_count must be at least three")
+        if not records:
+            raise ValueError("At least one augmentation-pack record is required")
+        self.records = records
+        self.boundary_count = boundary_count
+
+    def __len__(self):
+        return len(self.records)
+
+    def __getitem__(self, index):
+        record = self.records[index]
+        with np.load(record["path"], allow_pickle=False) as pack:
+            boundaries = np.asarray(pack["boundary_points"], dtype=np.float32)
+            coefficients = np.asarray(pack["coefficients"], dtype=np.float32)
+            angles = np.asarray(pack["angles"], dtype=np.float32)
+            degree = int(pack["degree"])
+            source_index = int(pack["source_index"])
+        if (boundaries.ndim != 3 or boundaries.shape[2] != 3 or
+                coefficients.ndim != 2 or len(boundaries) != len(coefficients) or
+                angles.shape != (len(boundaries),) or
+                not np.isfinite(boundaries).all() or
+                not np.isfinite(coefficients).all()):
+            raise ValueError(f"Invalid rotation pack arrays in {record['path']}")
+        if self.boundary_count is not None and boundaries.shape[1] != self.boundary_count:
+            boundaries = np.stack([
+                resample_boundary(boundary, self.boundary_count)
+                for boundary in boundaries
+            ])
+        return {
+            "boundary": torch.from_numpy(boundaries.copy()),
+            "coefficients": torch.from_numpy(coefficients.copy()),
+            "angle": torch.from_numpy(angles.copy()),
+            "degree": torch.tensor(degree, dtype=torch.int64),
+            "source_index": torch.tensor(source_index, dtype=torch.int64),
+        }

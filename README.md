@@ -195,6 +195,18 @@ python scripts/evaluate_prediction.py dataset/smoke/sample_000000.npz \
 [`docs/MODEL_RU.md`](docs/MODEL_RU.md). Это baseline для измеримого эксперимента:
 пока он не гарантирует сохранение края или меньшую площадь, чем численный решатель.
 
+Большой возобновляемый набор «контур → target mesh» генерируется параллельно:
+
+```bash
+python3 -u scripts/generate_dataset_parallel.py \
+  --samples 100000 --workers 6 --output-dir dataset/plateau-100k
+```
+
+По умолчанию в этом режиме SDF-запросы отключены, файлы разбиты на шарды по
+1000 samples, а незавершённый запуск безопасно продолжается той же командой.
+Параметры, оценка времени и устройство результата приведены в
+[`docs/LARGE_DATASET_RU.md`](docs/LARGE_DATASET_RU.md).
+
 Прямой вариант «контур → формула и площадь» запускается так:
 
 ```bash
@@ -209,6 +221,129 @@ python scripts/export_chebyshev.py runs/chebyshev-v1/best.pt \
 Самостоятельный `.py`-файл вычисляет её без PyTorch. Метод и ограничения подробно
 описаны в [`docs/CHEBYSHEV_RU.md`](docs/CHEBYSHEV_RU.md).
 
+До обучения сети готовую нормированную триангуляцию можно независимо
+аппроксимировать полиномом Чебышёва полной степени:
+
+```bash
+python scripts/fit_chebyshev_surface.py path/to/canonical-surface.npz \
+  --degree 10 --output runs/spectral/sample_000000_p10.npz
+```
+
+Fitting использует нулевые значения на поверхности и границе и локальные
+signed-distance targets по обе стороны ориентированных граней. Требования к
+ориентации, формат коэффициентов и диагностика описаны в
+[`docs/SPECTRAL_FITTING_RU.md`](docs/SPECTRAL_FITTING_RU.md).
+Старые наборы `dataset/v1` создавались до канонического поворота и могут не
+удовлетворять новому требованию к векторной площади.
+
+После генерации большого mesh-набора коэффициенты `p=10` вычисляются отдельным
+параллельным и возобновляемым проходом:
+
+```bash
+python3 -u scripts/fit_chebyshev_dataset_parallel.py \
+  dataset/plateau-100k/manifest.jsonl \
+  --degree 10 --workers 6 \
+  --output-dir dataset/plateau-100k-chebyshev-p10
+```
+
+Исходные поверхности не перезаписываются. Настройки, формат связанного manifest,
+диагностика и benchmark описаны в
+[`docs/CHEBYSHEV_DATASET_RU.md`](docs/CHEBYSHEV_DATASET_RU.md).
+
+Любую готовую пару можно визуально проверить в интерактивном окне:
+
+```bash
+python3 scripts/view_chebyshev_fit.py \
+  dataset/plateau-100k-chebyshev-p10/manifest.jsonl --index 12345
+```
+
+Кнопки и клавиши переключают записи, три синхронных вида показывают target,
+нулевой лист полинома и их наложение, а цвет — абсолютную ошибку по высоте.
+
+Воспроизводимый pilot по степеням `4,6,8,10,12,15`, refinement ground truth и
+ablation параметров fitting описан в
+[`docs/SPECTRAL_PILOT_RU.md`](docs/SPECTRAL_PILOT_RU.md). Для текущего класса
+контуров степень 10 дала медианный Chamfer `4.73e-4`; переход к степени 15
+улучшил его лишь на 7.1% при росте числа коэффициентов с 286 до 816.
+
+Точное действие остаточных вращений `SO(2)` на total-degree коэффициенты
+строится через комплексный базис `w=x+iy`, `wbar=x-iy`:
+
+```bash
+python3 scripts/build_rotation_matrices.py \
+  --degree 10 --output runs/rotation/degree-10.npz
+```
+
+Матрицы смены базиса строятся и проверяются в точной арифметике SymPy над
+`Q(i)`, затем экспортируются в `complex128`. Для основной степени 10 готовые
+матрицы уже сохранены в `python/minsurf_nn/assets` и автоматически загружаются
+без повторного запуска SymPy. Различие между поворотом системы
+координат и активным поворотом поверхности, а также API для augmentation
+описаны в [`docs/ROTATIONS_RU.md`](docs/ROTATIONS_RU.md).
+
+Готовые пары размножаются активными вращениями вокруг `Z` без повторного решения
+задачи Плато:
+
+```bash
+python3 -u scripts/augment_chebyshev_dataset_parallel.py \
+  dataset/plateau-100k-chebyshev-p10/manifest.jsonl \
+  --copies 8 --workers 6 \
+  --output-dir dataset/plateau-100k-chebyshev-p10-rot8
+```
+
+Один компактный pack хранит восемь повернутых контуров и векторов коэффициентов,
+а mesh остаётся ссылкой на исходный файл. Таким образом 100 000 дорогих решений
+дают 800 000 обучающих пар при сохранении групповых train/validation split.
+
+Гибридная модель обучается на 64 точках контура и предсказывает 286
+total-degree коэффициентов степени 10. Supervised-ошибка считается в
+стандартизованных коэффициентах, а граничный, Eikonal, mean-curvature и
+graph-loss непосредственно контролируют геометрию нулевого листа:
+
+```bash
+caffeinate -i python3 -u scripts/train_spectral_operator.py \
+  dataset/plateau-100k-chebyshev-p10-rot8/manifest.jsonl \
+  --boundary-count 64 --batch-packs 32 --workers 6 --epochs 50 \
+  --output-dir runs/spectral-operator-p10-n64-hybrid-v2 \
+  2>&1 | tee runs/spectral-operator-p10-n64-hybrid-v2.log
+```
+
+Encoder использует точки и два соседних ребра циклического контура. Поэтому он
+не зависит от выбора первой вершины и не содержит слоя с фиксированным числом
+точек: тот же checkpoint можно затем дообучать на 128, 252 или другом числе
+отсчётов. Аналитические первые и вторые производные базиса позволяют считать
+физические losses без вложенного point-autograd. Скрипт автоматически
+возобновляет обучение из `last.pt` и открывает один NPZ-pack на все восемь
+вращений, а не восемь раз.
+
+За 50 эпох hybrid-модель снизила среднюю validation-ошибку по высоте поверхности
+с `1.08e-2` до `2.13e-3`, а ошибку прохождения через границу — с `1.47e-2` до
+`2.61e-3` относительно прежнего supervised baseline (три случайных holdout-
+контура). Компактный checkpoint, полная история обучения, метрики и рисунок
+сравнения с Plateau teacher опубликованы в
+[`artifacts/spectral-hybrid-v2`](artifacts/spectral-hybrid-v2/README.md).
+
+Воспроизвести визуальное сравнение можно командой:
+
+```bash
+python3 scripts/compare_spectral_models.py --count 3 --seed 2026 --device mps
+```
+
+Сравнение времени inference и C++-решателя на новых, не входивших в dataset,
+контурах запускается так:
+
+```bash
+python3 scripts/benchmark_inference_vs_solver.py \
+  --checkpoint runs/spectral-operator-p10-n64/best.pt \
+  --solver build-benchmark/triangulation \
+  --count 2 --device mps \
+  --output-dir runs/inference-vs-triangulation
+```
+
+Benchmark отдельно измеряет чистый forward нейросети и построение явной
+треугольной сетки нулевого уровня, поэтому эти две существенно разные операции
+не смешиваются в одно вводящее в заблуждение время.
+
 ## Структура
 
 ```text
@@ -220,10 +355,22 @@ src/remesh.cpp           Качество сетки, перевороты рё�
 src/viewer.cpp           HTML-анимация и экспорт WebM в браузере
 tools/formula.py         Дискретизация формул средствами Python
 scripts/generate_dataset.py  Генерация NPZ-датасета через C++-решатель
+scripts/generate_dataset_parallel.py  Параллельная возобновляемая генерация больших наборов
 scripts/train_implicit.py    Обучение условного неявного поля
 scripts/predict_implicit.py  Marching Cubes и экспорт предсказания OBJ
 scripts/evaluate_prediction.py  Метрики предсказания относительно target
 scripts/train_chebyshev.py   Обучение прямого предиктора коэффициентов и площади
+scripts/fit_chebyshev_surface.py  Независимый total-degree fitting триангуляции
+scripts/fit_chebyshev_dataset_parallel.py  Параллельный fitting большого mesh-датасета
+scripts/view_chebyshev_fit.py  Интерактивное сравнение target и Chebyshev fit
+scripts/run_spectral_convergence.py  Сходимость ошибок по степени полинома
+scripts/run_fitting_ablation.py  Ablation расстояния смещения и веса границы
+scripts/run_solver_refinement.py  Сходимость ground-truth mesh при сгущении
+scripts/build_rotation_matrices.py  Точные SO(2)-матрицы для Chebyshev-коэффициентов
+scripts/augment_chebyshev_dataset_parallel.py  Параллельные SO(2)-augmentation packs
+scripts/train_spectral_operator.py  Hybrid contour→286 coefficients, variable N
+scripts/benchmark_inference_vs_solver.py  NN inference против C++ Plateau
+scripts/compare_spectral_models.py  Teacher, Chebyshev label и две NN на holdout
 scripts/export_chebyshev.py  Самостоятельная формула Python и OBJ
 python/minsurf_nn/       Модель, loader и функция потерь
 docs/                    Русская документация датасета и модели
